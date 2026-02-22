@@ -1,0 +1,48 @@
+{
+    "name": "worldmonitor",
+    "version": "1.0.0",
+    "description": "Bot Discord de surveillance de l'actualité mondiale en temps réel",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js",
+        "dev": "nodemon index.js",
+        "register": "node src/discord/registerCommands.js",
+        "pm2": "pm2 start ecosystem.config.js"
+    },
+    "keywords": [
+        "discord",
+        "bot",
+        "news",
+        "monitoring",
+        "geopolitics"
+    ],
+    "author": "WorldMonitor",
+    "license": "MIT",
+    "dependencies": {
+        "discord.js": "^14.14.1",
+        "@discordjs/rest": "^2.3.0",
+        "mongoose": "^8.1.1",
+        "rss-parser": "^3.13.0",
+        "axios": "^1.6.5",
+        "cheerio": "^1.0.0-rc.12",
+        "node-cron": "^3.0.3",
+        "string-similarity": "^4.0.4",
+        "dotenv": "^16.4.1",
+        "winston": "^3.11.0",
+        "winston-daily-rotate-file": "^4.7.1",
+        "p-queue": "^6.6.2",
+        "node-fetch": "^2.7.0",
+        "xml2js": "^0.6.2",
+        "moment": "^2.30.1",
+        "moment-timezone": "^0.5.45"
+    },
+    "optionalDependencies": {
+        "canvas": "^2.11.2"
+    },
+    "devDependencies": {
+        "nodemon": "^3.0.3"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

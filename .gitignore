@@ -1,0 +1,19 @@
+# Logs du bot
+logs/
+
+# Variables d'environnement
+.env
+
+# Node modules
+node_modules/
+
+# PM2
+.pm2/
+
+# Fichiers temporaires
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
