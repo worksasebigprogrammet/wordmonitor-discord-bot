@@ -96,7 +96,7 @@ function startBriefingScheduler() {
     // Vérification toutes les heures, à la minute 30
     cron.schedule('30 * * * *', async () => {
         try {
-            const servers = await ServerConfig.find({ setupComplete: true, briefingEnabled: true }).lean();
+            const servers = await ServerConfig.find({ briefingEnabled: true }).lean();
             for (const serverData of servers) {
                 const serverConfig = new ServerConfig(serverData);
                 if (isBriefingDue(serverConfig)) {

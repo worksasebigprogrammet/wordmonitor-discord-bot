@@ -17,7 +17,7 @@ const commandHandler = require('./src/discord/CommandHandler');
 const { registerCommands } = require('./src/discord/registerCommands');
 const { runCollectionCycle, startScheduler, setProcessor } = require('./src/collectors/CollectorManager');
 const { processArticles, setPublisher } = require('./src/processors/ArticleProcessor');
-const { publishNews } = require('./src/discord/publisher/NewsPublisher');
+const { publishNews, setClient } = require('./src/discord/publisher/NewsPublisher');
 const { startIndexScheduler } = require('./src/discord/publisher/IndexPublisher');
 const { startBriefingScheduler } = require('./src/discord/publisher/BriefingPublisher');
 
@@ -86,6 +86,7 @@ client.once('ready', async () => {
     // Injecter les dépendances (éviter les cycles)
     setProcessor(processArticles);
     setPublisher({ publishNews });
+    setClient(client); // Bug 6: client discord pour publication directe en channel
 
     // Health checks
     await runHealthChecks();

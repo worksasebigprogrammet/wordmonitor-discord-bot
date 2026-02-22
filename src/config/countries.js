@@ -4,6 +4,9 @@
  * Format: code ISO → { name, emoji, continent, keywords[] }
  * Les keywords incluent le nom du pays dans toutes les langues,
  * les villes majeures, les leaders actuels et les termes géopolitiques.
+ *
+ * IMPORTANT: La détection utilise des word boundaries (\b) pour éviter
+ * les faux positifs (ex: "south" ≠ "South Africa", "Peru" ≠ "Peruvian").
  */
 
 'use strict';
@@ -26,23 +29,23 @@ const COUNTRIES = {
     },
     GB: {
         name: 'Royaume-Uni', emoji: '🇬🇧', continent: 'europe',
-        keywords: ['United Kingdom', 'UK', 'Britain', 'British', 'London', 'Londres', 'Royaume-Uni', 'britannique', 'England', 'Scotland', 'Wales', 'Downing Street', 'Parliament', 'Sunak', 'Starmer', 'MI6', 'SAS'],
+        keywords: ['United Kingdom', 'Britain', 'British', 'London', 'Londres', 'Royaume-Uni', 'britannique', 'England', 'Scotland', 'Wales', 'Downing Street', 'Sunak', 'Starmer', 'MI6', 'SAS'],
     },
     DE: {
         name: 'Allemagne', emoji: '🇩🇪', continent: 'europe',
-        keywords: ['Germany', 'Allemagne', 'Berlin', 'German', 'allemand', 'Bundeswehr', 'Bundestag', 'Scholz', 'München', 'Munich', 'Frankfurt', 'Merz', 'AfD', 'SPD', 'CDU'],
+        keywords: ['Germany', 'Allemagne', 'Berlin', 'German', 'allemand', 'Bundeswehr', 'Bundestag', 'Scholz', 'München', 'Munich', 'Merz', 'AfD', 'SPD', 'CDU'],
     },
     PL: {
         name: 'Pologne', emoji: '🇵🇱', continent: 'europe',
-        keywords: ['Poland', 'Pologne', 'Warsaw', 'Varsovie', 'Polish', 'polonais', 'Tusk', 'Duda', 'Kraków', 'NATO flank'],
+        keywords: ['Poland', 'Pologne', 'Warsaw', 'Varsovie', 'Polish', 'polonais', 'Tusk', 'Duda', 'Kraków'],
     },
     IT: {
         name: 'Italie', emoji: '🇮🇹', continent: 'europe',
-        keywords: ['Italy', 'Italie', 'Rome', 'Italian', 'italien', 'Meloni', 'Milan', 'Naples', 'Sicile', 'mafia'],
+        keywords: ['Italy', 'Italie', 'Rome', 'Italian', 'italien', 'Meloni', 'Milan', 'Naples', 'Sicile'],
     },
     ES: {
         name: 'Espagne', emoji: '🇪🇸', continent: 'europe',
-        keywords: ['Spain', 'Espagne', 'Madrid', 'Spanish', 'espagnol', 'Barcelona', 'Barcelone', 'Catalonia', 'Catalogne', 'Sanchez', 'ETA'],
+        keywords: ['Spain', 'Espagne', 'Madrid', 'Spanish', 'espagnol', 'Barcelona', 'Barcelone', 'Catalonia', 'Catalogne', 'Sanchez'],
     },
     RO: {
         name: 'Roumanie', emoji: '🇷🇴', continent: 'europe',
@@ -58,7 +61,7 @@ const COUNTRIES = {
     },
     NO: {
         name: 'Norvège', emoji: '🇳🇴', continent: 'europe',
-        keywords: ['Norway', 'Norvège', 'Oslo', 'Norwegian', 'norvégien', 'Storting'],
+        keywords: ['Norway', 'Norvège', 'Oslo', 'Norwegian', 'norvégien'],
     },
     GR: {
         name: 'Grèce', emoji: '🇬🇷', continent: 'europe',
@@ -94,7 +97,7 @@ const COUNTRIES = {
     },
     AZ: {
         name: 'Azerbaïdjan', emoji: '🇦🇿', continent: 'europe',
-        keywords: ['Azerbaijan', 'Azerbaïdjan', 'Baku', 'Bakou', 'Azerbaijani', 'azerbaïdjanais', 'Aliyev', 'Karabakh', 'Haut-Karabakh'],
+        keywords: ['Azerbaijan', 'Azerbaïdjan', 'Baku', 'Bakou', 'Azerbaijani', 'azerbaïdjanais', 'Aliyev', 'Haut-Karabakh'],
     },
 
     // ────────────────────────────────────────────────────────────────────────
@@ -114,7 +117,7 @@ const COUNTRIES = {
     },
     TR: {
         name: 'Turquie', emoji: '🇹🇷', continent: 'middle_east',
-        keywords: ['Turkey', 'Turquie', 'Ankara', 'Istanbul', 'Turkish', 'turc', 'Erdogan', 'Erdoğan', 'AKP', 'Bosphore', 'Izmir', 'Kurdistan PKK'],
+        keywords: ['Turkey', 'Turquie', 'Ankara', 'Istanbul', 'Turkish', 'turc', 'Erdogan', 'Erdoğan', 'AKP', 'Bosphore', 'Izmir'],
     },
     SY: {
         name: 'Syrie', emoji: '🇸🇾', continent: 'middle_east',
@@ -130,11 +133,11 @@ const COUNTRIES = {
     },
     LB: {
         name: 'Liban', emoji: '🇱🇧', continent: 'middle_east',
-        keywords: ['Lebanon', 'Liban', 'Beirut', 'Beyrouth', 'Lebanese', 'libanais', 'Hezbollah', 'South Lebanon', 'Tripoli'],
+        keywords: ['Lebanon', 'Liban', 'Beirut', 'Beyrouth', 'Lebanese', 'libanais', 'South Lebanon', 'Tripoli'],
     },
     JO: {
         name: 'Jordanie', emoji: '🇯🇴', continent: 'middle_east',
-        keywords: ['Jordan', 'Jordanie', 'Amman', 'Jordanian', 'jordanien', 'Abdullah', 'Wadi Rum'],
+        keywords: ['Jordan', 'Jordanie', 'Amman', 'Jordanian', 'jordanien', 'Abdullah'],
     },
     AE: {
         name: 'EAU', emoji: '🇦🇪', continent: 'middle_east',
@@ -142,7 +145,7 @@ const COUNTRIES = {
     },
     PS: {
         name: 'Palestine', emoji: '🇵🇸', continent: 'middle_east',
-        keywords: ['Palestine', 'Palestinian', 'palestinien', 'Gaza', 'West Bank', 'Cisjordanie', 'Hamas', 'Ramallah', 'Fatah', 'UNRWA', 'Rafah', 'Khan Younis'],
+        keywords: ['Palestine', 'Palestinian', 'palestinien', 'West Bank', 'Cisjordanie', 'Hamas', 'Ramallah', 'Fatah', 'UNRWA', 'Rafah', 'Khan Younis'],
     },
     QA: {
         name: 'Qatar', emoji: '🇶🇦', continent: 'middle_east',
@@ -182,7 +185,7 @@ const COUNTRIES = {
     },
     PK: {
         name: 'Pakistan', emoji: '🇵🇰', continent: 'asia',
-        keywords: ['Pakistan', 'Islamabad', 'Pakistani', 'pakistanais', 'Karachi', 'Lahore', 'ISI', 'army', 'Balochistan', 'Taliban', 'Khan', 'Sharif'],
+        keywords: ['Pakistan', 'Islamabad', 'Pakistani', 'pakistanais', 'Karachi', 'Lahore', 'ISI', 'Balochistan', 'Taliban', 'Khan', 'Sharif'],
     },
     AF: {
         name: 'Afghanistan', emoji: '🇦🇫', continent: 'asia',
@@ -190,31 +193,56 @@ const COUNTRIES = {
     },
     MM: {
         name: 'Myanmar', emoji: '🇲🇲', continent: 'asia',
-        keywords: ['Myanmar', 'Burma', 'Birmanie', 'Naypyidaw', 'Rangoon', 'Yangon', 'Rohingya', 'junta', 'SAC', 'PDF', 'Rakhine'],
+        keywords: ['Myanmar', 'Burma', 'Birmanie', 'Naypyidaw', 'Rangoon', 'Yangon', 'Rohingya', 'junta birmane', 'SAC Myanmar', 'PDF Myanmar', 'Rakhine'],
     },
     PH: {
         name: 'Philippines', emoji: '🇵🇭', continent: 'asia',
-        keywords: ['Philippines', 'Manila', 'Manille', 'Filipino', 'philippin', 'Marcos', 'South China Sea', 'mer de Chine méridionale', 'Scarborough', 'Spratly'],
+        keywords: ['Philippines', 'Manila', 'Manille', 'Filipino', 'philippin', 'Marcos', 'Scarborough', 'Spratly'],
     },
     VN: {
         name: 'Vietnam', emoji: '🇻🇳', continent: 'asia',
-        keywords: ['Vietnam', 'Hanoi', 'Hanoï', 'Vietnamese', 'vietnamien', 'Ho Chi Minh', 'South China Sea'],
+        keywords: ['Vietnam', 'Hanoi', 'Hanoï', 'Vietnamese', 'vietnamien', 'Ho Chi Minh City'],
     },
     TH: {
         name: 'Thaïlande', emoji: '🇹🇭', continent: 'asia',
-        keywords: ['Thailand', 'Thaïlande', 'Bangkok', 'Thai', 'thaïlandais', 'coup', 'junta'],
+        keywords: ['Thailand', 'Thaïlande', 'Bangkok', 'Thai', 'thaïlandais'],
     },
     ID: {
         name: 'Indonésie', emoji: '🇮🇩', continent: 'asia',
-        keywords: ['Indonesia', 'Indonésie', 'Jakarta', 'Indonesian', 'indonésien', 'Prabowo', 'Bali', 'Papua'],
+        keywords: ['Indonesia', 'Indonésie', 'Jakarta', 'Indonesian', 'indonésien', 'Prabowo', 'Bali', 'Papua Indonesia'],
     },
     KZ: {
         name: 'Kazakhstan', emoji: '🇰🇿', continent: 'asia',
-        keywords: ['Kazakhstan', 'Astana', 'Almaty', 'Kazakh', 'kazakhstanais', 'Tokayev', 'OCS', 'SCO'],
+        keywords: ['Kazakhstan', 'Astana', 'Almaty', 'Kazakh', 'kazakhstanais', 'Tokayev'],
     },
     BD: {
         name: 'Bangladesh', emoji: '🇧🇩', continent: 'asia',
         keywords: ['Bangladesh', 'Dhaka', 'Bangladeshi', 'bangladais', 'Hasina', 'Yunus'],
+    },
+    // Pays fréquents pour les séismes (Bug 3 fix)
+    NZ: {
+        name: 'Nouvelle-Zélande', emoji: '🇳🇿', continent: 'asia',
+        keywords: ['New Zealand', 'Nouvelle-Zélande', 'Wellington', 'Auckland', 'Christchurch', 'Kiwi', 'New Zealander'],
+    },
+    PG: {
+        name: 'Papouasie-Nouvelle-Guinée', emoji: '🇵🇬', continent: 'asia',
+        keywords: ['Papua New Guinea', 'Papouasie-Nouvelle-Guinée', 'Port Moresby', 'PNG', 'Papua New Guinean'],
+    },
+    VU: {
+        name: 'Vanuatu', emoji: '🇻🇺', continent: 'asia',
+        keywords: ['Vanuatu', 'Port Vila', 'ni-Vanuatu'],
+    },
+    TO: {
+        name: 'Tonga', emoji: '🇹🇴', continent: 'asia',
+        keywords: ['Tonga', "Nuku'alofa", 'Tongan'],
+    },
+    FJ: {
+        name: 'Fidji', emoji: '🇫🇯', continent: 'asia',
+        keywords: ['Fiji', 'Fidji', 'Suva', 'Fijian'],
+    },
+    SB: {
+        name: 'Îles Salomon', emoji: '🇸🇧', continent: 'asia',
+        keywords: ['Solomon Islands', 'Îles Salomon', 'Honiara', 'Solomon'],
     },
 
     // ────────────────────────────────────────────────────────────────────────
@@ -238,47 +266,47 @@ const COUNTRIES = {
     },
     CD: {
         name: 'RD Congo', emoji: '🇨🇩', continent: 'africa',
-        keywords: ['Congo', 'DRC', 'RDC', 'Kinshasa', 'Congolese', 'congolais', 'M23', 'Goma', 'Kivu', 'Tshisekedi', 'FARDC', 'FDLR', 'Rwanda', 'Bukavu'],
+        keywords: ['Democratic Republic of Congo', 'DRC', 'RDC', 'Kinshasa', 'Congolese', 'congolais', 'M23', 'Goma', 'Kivu', 'Tshisekedi', 'FARDC', 'FDLR', 'Bukavu'],
     },
     SO: {
         name: 'Somalie', emoji: '🇸🇴', continent: 'africa',
-        keywords: ['Somalia', 'Somalie', 'Mogadishu', 'Mogadiscio', 'Somali', 'somalien', 'Al-Shabaab', 'AMISOM', 'ATMIS', 'piracy', 'piraterie'],
+        keywords: ['Somalia', 'Somalie', 'Mogadishu', 'Mogadiscio', 'Somali', 'somalien', 'Al-Shabaab', 'AMISOM', 'ATMIS', 'piracy somalienne'],
     },
     LY: {
         name: 'Libye', emoji: '🇱🇾', continent: 'africa',
-        keywords: ['Libya', 'Libye', 'Tripoli', 'Libyan', 'libyen', 'Benghazi', 'Haftar', 'GNU', 'LNA', 'Dbeibah'],
+        keywords: ['Libya', 'Libye', 'Tripoli libye', 'Libyan', 'libyen', 'Benghazi', 'Haftar', 'GNU', 'LNA', 'Dbeibah'],
     },
     ML: {
         name: 'Mali', emoji: '🇲🇱', continent: 'africa',
-        keywords: ['Mali', 'Bamako', 'Malian', 'malien', 'Sahel', 'JNIM', 'Wagner', 'Africa Corps', 'GSIM', 'AQIM', 'Goïta', 'jihadiste', 'Tombouctou'],
+        keywords: ['Mali', 'Bamako', 'Malian', 'malien', 'Sahel', 'JNIM', 'Africa Corps Mali', 'GSIM', 'AQIM', 'Goïta', 'Tombouctou'],
     },
     BF: {
         name: 'Burkina Faso', emoji: '🇧🇫', continent: 'africa',
-        keywords: ['Burkina Faso', 'Ouagadougou', 'burkinabè', 'Sahel', 'Traoré', 'Vandré', 'VDP', 'jihadiste'],
+        keywords: ['Burkina Faso', 'Ouagadougou', 'burkinabè', 'Traoré Burkina', 'VDP', 'jihadiste Burkina'],
     },
     NE: {
         name: 'Niger', emoji: '🇳🇪', continent: 'africa',
-        keywords: ['Niger', 'Niamey', 'nigérien', 'Sahel', 'coup', 'CNSP', 'Tiani', 'Bazoum', 'uranium'],
+        keywords: ['Niger', 'Niamey', 'nigérien', 'Sahel Niger', 'CNSP', 'Tiani', 'Bazoum'],
     },
     ZA: {
         name: 'Afrique du Sud', emoji: '🇿🇦', continent: 'africa',
-        keywords: ['South Africa', 'Afrique du Sud', 'Pretoria', 'Johannesburg', 'Cape Town', 'Le Cap', 'Ramaphosa', 'ANC', 'BRICS'],
+        keywords: ['South Africa', 'Afrique du Sud', 'Pretoria', 'Johannesburg', 'Cape Town', 'Le Cap', 'Ramaphosa', 'ANC', 'BRICS Afrique du Sud'],
     },
     KE: {
         name: 'Kenya', emoji: '🇰🇪', continent: 'africa',
-        keywords: ['Kenya', 'Nairobi', 'Kenyan', 'kényan', 'Ruto', 'Al-Shabaab', 'Mombasa'],
+        keywords: ['Kenya', 'Nairobi', 'Kenyan', 'kényan', 'Ruto', 'Mombasa'],
     },
     MZ: {
         name: 'Mozambique', emoji: '🇲🇿', continent: 'africa',
-        keywords: ['Mozambique', 'Maputo', 'Mozambican', 'mozambicain', 'Cabo Delgado', 'IS Mozambique', 'RENAMO'],
+        keywords: ['Mozambique', 'Maputo', 'Mozambican', 'mozambicain', 'Cabo Delgado', 'RENAMO'],
     },
     TD: {
         name: 'Tchad', emoji: '🇹🇩', continent: 'africa',
-        keywords: ['Chad', 'Tchad', "N'Djamena", 'Chadian', 'tchadien', 'Déby', 'Sahel', 'Boko Haram'],
+        keywords: ['Chad', 'Tchad', "N'Djamena", 'Chadian', 'tchadien', 'Déby', 'Sahel Tchad'],
     },
     CF: {
         name: 'Centrafrique', emoji: '🇨🇫', continent: 'africa',
-        keywords: ['Central African Republic', 'Centrafrique', 'CAR', 'Bangui', 'Wagner', 'Africa Corps', 'Touadéra'],
+        keywords: ['Central African Republic', 'Centrafrique', 'CAR', 'Bangui', 'Africa Corps CAR', 'Touadéra'],
     },
     ZW: {
         name: 'Zimbabwe', emoji: '🇿🇼', continent: 'africa',
@@ -290,55 +318,66 @@ const COUNTRIES = {
     // ────────────────────────────────────────────────────────────────────────
     US: {
         name: 'États-Unis', emoji: '🇺🇸', continent: 'americas',
-        keywords: ['United States', 'USA', 'États-Unis', 'Washington', 'American', 'américain', 'White House', 'Maison Blanche', 'Pentagon', 'Pentagone', 'Congress', 'Congrès', 'Biden', 'Trump', 'New York', 'California', 'Senate', 'Sénat', 'CIA', 'NSA', 'State Department', 'Département d\'État'],
+        keywords: ['United States', 'USA', 'États-Unis', 'Washington DC', 'American', 'américain', 'White House', 'Maison Blanche', 'Pentagon', 'Pentagone', 'US Congress', 'Biden', 'Trump', 'New York', 'California', 'CIA', 'NSA', 'State Department', 'Département d\'État'],
     },
     BR: {
         name: 'Brésil', emoji: '🇧🇷', continent: 'americas',
-        keywords: ['Brazil', 'Brésil', 'Brasilia', 'Brazilian', 'brésilien', 'Lula', 'São Paulo', 'Rio', 'Amazon', 'Amazonie', 'favela'],
+        keywords: ['Brazil', 'Brésil', 'Brasilia', 'Brasília', 'Brazilian', 'brésilien', 'Lula', 'São Paulo', 'Rio de Janeiro', 'Amazonie'],
     },
     MX: {
         name: 'Mexique', emoji: '🇲🇽', continent: 'americas',
-        keywords: ['Mexico', 'Mexique', 'Mexico City', 'Mexican', 'mexicain', 'cartel', 'Sheinbaum', 'Sinaloa', 'CJNG', 'narco', 'fentanyl'],
+        keywords: ['Mexico', 'Mexique', 'Mexico City', 'Mexican', 'mexicain', 'cartel mexicain', 'Sheinbaum', 'Sinaloa', 'CJNG', 'fentanyl Mexique'],
     },
     CA: {
         name: 'Canada', emoji: '🇨🇦', continent: 'americas',
-        keywords: ['Canada', 'Ottawa', 'Canadian', 'canadien', 'Trudeau', 'Carney', 'Toronto', 'Vancouver', 'Quebec', 'Québec', 'Arctic', 'Arctique'],
+        keywords: ['Canada', 'Ottawa', 'Canadian', 'canadien', 'Trudeau', 'Carney', 'Toronto', 'Vancouver', 'Quebec', 'Québec', 'Arctique canadien'],
     },
     CO: {
         name: 'Colombie', emoji: '🇨🇴', continent: 'americas',
-        keywords: ['Colombia', 'Colombie', 'Bogota', 'Colombian', 'colombien', 'FARC', 'Petro', 'cartel', 'ELN', 'narcotrafic'],
+        keywords: ['Colombia', 'Colombie', 'Bogota', 'Bogotá', 'Colombian', 'colombien', 'FARC', 'Petro', 'ELN', 'narcotrafic Colombie'],
     },
     VE: {
         name: 'Venezuela', emoji: '🇻🇪', continent: 'americas',
-        keywords: ['Venezuela', 'Caracas', 'Venezuelan', 'vénézuélien', 'Maduro', 'Gonzalez', 'Machado', 'Guyana Esequiba', 'pétrole'],
+        keywords: ['Venezuela', 'Caracas', 'Venezuelan', 'vénézuélien', 'Maduro', 'Gonzalez Venezuela', 'Machado', 'Guyana Esequiba'],
     },
     AR: {
         name: 'Argentine', emoji: '🇦🇷', continent: 'americas',
-        keywords: ['Argentina', 'Argentine', 'Buenos Aires', 'Argentinian', 'argentin', 'Milei', 'Falklands', 'Malouines', 'peso'],
+        keywords: ['Argentina', 'Argentine', 'Buenos Aires', 'Argentinian', 'argentin', 'Milei', 'Falklands', 'Malouines'],
     },
+    // Bug 3 fix: Chile déjà présent mais keywords mieux délimités
     CL: {
         name: 'Chili', emoji: '🇨🇱', continent: 'americas',
-        keywords: ['Chile', 'Chili', 'Santiago', 'Chilean', 'chilien', 'Boric', 'lithium', 'cuivre'],
+        keywords: ['Chile', 'Chili', 'Santiago du Chili', 'Chilean', 'chilien', 'Boric', 'lithium Chili', 'cuivre Chili'],
     },
     CU: {
         name: 'Cuba', emoji: '🇨🇺', continent: 'americas',
-        keywords: ['Cuba', 'Havana', 'La Havane', 'Cuban', 'cubain', 'embargo', 'Diaz-Canel', 'Guantanamo'],
+        keywords: ['Cuba', 'Havana', 'La Havane', 'Cuban', 'cubain', 'embargo Cuba', 'Diaz-Canel', 'Guantanamo'],
     },
     HT: {
         name: 'Haïti', emoji: '🇭🇹', continent: 'americas',
-        keywords: ['Haiti', 'Haïti', 'Port-au-Prince', 'Haitian', 'haïtien', 'gang', 'MSS', 'BINUH', 'Kenya mission'],
+        keywords: ['Haiti', 'Haïti', 'Port-au-Prince', 'Haitian', 'haïtien', 'gang haïtien', 'BINUH'],
     },
     EC: {
         name: 'Équateur', emoji: '🇪🇨', continent: 'americas',
-        keywords: ['Ecuador', 'Équateur', 'Quito', 'Ecuadorian', 'équatorien', 'Noboa', 'gang', 'narco'],
+        keywords: ['Ecuador', 'Équateur', 'Quito', 'Ecuadorian', 'équatorien', 'Noboa'],
     },
+    // Bug 3 fix: Peru avec keywords mieux délimités
     PE: {
         name: 'Pérou', emoji: '🇵🇪', continent: 'americas',
-        keywords: ['Peru', 'Pérou', 'Lima', 'Peruvian', 'péruvien', 'Boluarte', 'Sendero Luminoso'],
+        keywords: ['Peru', 'Pérou', 'Lima Pérou', 'Peruvian', 'péruvien', 'Boluarte', 'Sendero Luminoso'],
     },
     NI: {
         name: 'Nicaragua', emoji: '🇳🇮', continent: 'americas',
-        keywords: ['Nicaragua', 'Managua', 'Nicaraguan', 'nicaraguayen', 'Ortega', 'dictature'],
+        keywords: ['Nicaragua', 'Managua', 'Nicaraguan', 'nicaraguayen', 'Ortega Nicaragua'],
+    },
+    // Bug 3 fix: pays supplémentaires pour les séismes
+    GT: {
+        name: 'Guatemala', emoji: '🇬🇹', continent: 'americas',
+        keywords: ['Guatemala', 'Guatemala City', 'Guatemalan', 'guatémaltèque'],
+    },
+    SV: {
+        name: 'Salvador', emoji: '🇸🇻', continent: 'americas',
+        keywords: ['El Salvador', 'Salvador', 'San Salvador', 'Salvadoran', 'salvadorien', 'Bukele'],
     },
 };
 
@@ -354,33 +393,90 @@ for (const [code, data] of Object.entries(COUNTRIES)) {
     COUNTRIES_BY_CONTINENT[data.continent].push(code);
 }
 
+// ─── MOTS PARASITES À IGNORER (évitent les faux positifs) ─────────────────
+// Ces termes géographiques courants ne doivent PAS déclencher un match de pays
+// Ex: "60 km south of" ne doit pas matcher "South Africa"
+const FALSE_POSITIVE_PATTERNS = [
+    /\b(\d+)\s*km\s+(north|south|east|west)\s+of\b/i,
+    /\b(north|south|east|west)\s+of\b/i,
+    /\b(northern|southern|eastern|western)\s+(region|part|coast|border|flank|sector)\b/i,
+];
+
+/**
+ * Vérifie si le texte contient un keyword avec un vrai word boundary
+ * @param {string} textLower - Texte en minuscules
+ * @param {string} keyword - Mot-clé à chercher
+ * @returns {boolean}
+ */
+function matchesKeyword(textLower, keyword) {
+    const kw = keyword.toLowerCase();
+    // Utiliser une regex avec word boundaries pour éviter les correspondances partielles
+    // On échappe les caractères spéciaux sauf les espaces
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // \b fonctionne sur les lettres ASCII — pour les caractères accentués on utilise
+    // une approche basée sur les séparateurs de mots (espace, ponctuation)
+    const pattern = new RegExp(
+        `(?:^|[\\s,;.!?:"'(\\[{/<>])${escaped}(?:$|[\\s,;.!?:"')\\]}>/<])`,
+        'i'
+    );
+    return pattern.test(textLower) || textLower === kw;
+}
+
 /**
  * Détecte le pays mentionné dans un texte via les mots-clés
- * @param {string} text - Texte à analyser
+ * Utilise des word boundaries pour éviter les faux positifs
+ * @param {string} text - Texte à analyser (titre + description recommandé)
  * @returns {string|null} Code ISO du pays ou null
  */
 function detectCountry(text) {
     if (!text) return null;
+
+    // Vérifier si le texte contient des patterns parasites (ex: "south of the city")
+    const hasDirectionalNoise = FALSE_POSITIVE_PATTERNS.some(p => p.test(text));
+
     const textLower = text.toLowerCase();
     let bestMatch = null;
     let bestScore = 0;
 
     for (const [code, data] of Object.entries(COUNTRIES)) {
         let score = 0;
+        let nameMatchBonus = 0;
+
         for (const kw of data.keywords) {
-            if (textLower.includes(kw.toLowerCase())) {
-                score++;
-                // Les mots-clés courts ont moins de poids
-                if (kw.length > 6) score++;
+            // Pour les mots-clés courts ou directionnels, exiger un match exact
+            const kwLower = kw.toLowerCase();
+
+            // Si le texte a du bruit directionnel, ignorer les mots-clés qui
+            // sont des mots directionnels seuls (ex: "South Africa" → vérifier précisément)
+            if (hasDirectionalNoise && kwLower.length <= 12 && /^(north|south|east|west)/i.test(kwLower)) {
+                // Exiger un match strict pour éviter les faux positifs
+                if (!matchesKeyword(textLower, kw)) continue;
+            } else if (!textLower.includes(kwLower)) {
+                continue;
+            }
+
+            // Score de base
+            score++;
+
+            // Bonus pour les mots-clés longs (plus spécifiques)
+            if (kw.length > 8) score++;
+            if (kw.length > 15) score++; // Encore plus spécifique
+
+            // Bonus FORT si c'est le nom officiel du pays (1er keyword défini comme nom)
+            if (kwLower === data.name.toLowerCase() || kwLower === `${data.name.toLowerCase()}`) {
+                nameMatchBonus += 5;
             }
         }
-        if (score > bestScore) {
-            bestScore = score;
+
+        const finalScore = score + nameMatchBonus;
+        if (finalScore > bestScore) {
+            bestScore = finalScore;
             bestMatch = code;
         }
     }
 
-    return bestScore > 0 ? bestMatch : null;
+    // Seuil minimum : au moins 1 point pour éviter les matches accidentels
+    return bestScore >= 1 ? bestMatch : null;
 }
 
 /**
@@ -397,11 +493,11 @@ function detectContinent(text) {
     // Détection directe du continent
     const textLower = text.toLowerCase();
     const continentKeywords = {
-        europe: ['europe', 'european', 'européen', 'nato', 'otan', 'eu ', ' ue '],
-        middle_east: ['middle east', 'moyen-orient', 'golfe', 'gulf', 'levant'],
-        asia: ['asia', 'asie', 'pacific', 'pacifique', 'indo-pacific'],
-        africa: ['africa', 'afrique', 'sahel', 'subsaharan'],
-        americas: ['americas', 'amérique', 'latin america', 'amérique latine', 'caribbean', 'caraïbes'],
+        europe: ['european union', 'europe', 'européen', 'nato', 'otan', ' eu ', ' ue '],
+        middle_east: ['middle east', 'moyen-orient', 'golfe persique', 'persian gulf', 'levant'],
+        asia: ['south-east asia', 'southeast asia', 'asia pacific', 'indo-pacific', 'asie'],
+        africa: ['sub-saharan africa', 'saharan africa', 'west africa', 'east africa', 'afrique', 'sahel'],
+        americas: ['latin america', 'amérique latine', 'caribbean', 'caraïbes', 'south america', 'amérique du sud'],
     };
     for (const [continent, keywords] of Object.entries(continentKeywords)) {
         if (keywords.some(kw => textLower.includes(kw))) {

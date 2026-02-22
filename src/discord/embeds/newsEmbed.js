@@ -30,6 +30,22 @@ function truncate(text, maxLength) {
 }
 
 /**
+ * Résout un SEVERITY_LABEL en string selon la langue
+ * SEVERITY_LABELS est un objet { fr: '...', en: '...' } ou une string directe
+ * @param {string} severity - Niveau de gravité
+ * @param {boolean} isFr - True si langue française
+ * @returns {string}
+ */
+function getSeverityLabel(severity, isFr) {
+    const label = SEVERITY_LABELS[severity];
+    if (!label) return severity || 'N/A';
+    if (typeof label === 'object' && label !== null) {
+        return isFr ? (label.fr || severity) : (label.en || severity);
+    }
+    return String(label);
+}
+
+/**
  * Génère un embed Discord pour un article
  * @param {object} news - Document News MongoDB
  * @param {string} lang - Langue ('fr'|'en')
@@ -49,7 +65,8 @@ function buildNewsEmbed(news, lang = 'fr') {
         : (categoryData.name?.en || news.category);
 
     const severityEmoji = SEVERITY_EMOJIS[news.severity] || '🔵';
-    const severityLabel = SEVERITY_LABELS[news.severity] || news.severity;
+    // BUG 2 FIX: résoudre l'objet { fr, en } en string selon la langue
+    const severityLabel = getSeverityLabel(news.severity, isFr);
 
     // ─── Localisation ─────────────────────────────────────────────────────────
     const countryData = news.country ? COUNTRIES[news.country] : null;
@@ -92,10 +109,11 @@ function buildNewsEmbed(news, lang = 'fr') {
     }
 
     // Source + fiabilité
-    const reliabilityBar = '▓'.repeat(news.sourceReliability || 7) + '░'.repeat(10 - (news.sourceReliability || 7));
+    const rel = Math.min(Math.max(news.sourceReliability || 7, 0), 10);
+    const reliabilityBar = '▓'.repeat(rel) + '░'.repeat(10 - rel);
     fields.push({
         name: isFr ? '📡 Source' : '📡 Source',
-        value: `${news.sourceName}\n\`${reliabilityBar}\` ${news.sourceReliability || 7}/10`,
+        value: `${news.sourceName || 'Inconnue'}\n\`${reliabilityBar}\` ${rel}/10`,
         inline: true,
     });
 
@@ -119,7 +137,6 @@ function buildNewsEmbed(news, lang = 'fr') {
     const timeAgo = moment(news.originalDate || news.createdAt).fromNow();
     embed.setFooter({
         text: `WorldMonitor • ${timeAgo}`,
-        iconURL: 'https://i.imgur.com/worldmonitor-icon.png', // Remplacer par l'icône réelle
     });
 
     return embed;
@@ -144,8 +161,8 @@ function buildCompactNewsEmbed(news, lang = 'fr') {
         .setColor(SEVERITY_COLORS[news.severity] || SEVERITY_COLORS.info)
         .setTitle(truncate(`${severityEmoji} ${categoryEmoji} ${countryEmoji} ${title}`, DISCORD_LIMITS.EMBED_TITLE_MAX))
         .setURL(news.url)
-        .setFooter({ text: `${news.sourceName} • ${moment(news.originalDate).fromNow()}` })
-        .setTimestamp(news.originalDate);
+        .setFooter({ text: `${news.sourceName || 'Inconnue'} • ${moment(news.originalDate || new Date()).fromNow()}` })
+        .setTimestamp(news.originalDate || new Date());
 }
 
-module.exports = { buildNewsEmbed, buildCompactNewsEmbed, truncate };
+module.exports = { buildNewsEmbed, buildCompactNewsEmbed, truncate, getSeverityLabel };
