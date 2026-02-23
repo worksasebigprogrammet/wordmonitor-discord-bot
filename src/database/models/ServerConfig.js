@@ -2,11 +2,44 @@
  * src/database/models/ServerConfig.js
  * Configuration par serveur Discord
  * Stocke tous les paramètres du bot pour chaque guild
+ *
+ * V2 : Refactorisation du stockage des channels
+ * - channels Map<String,String> : nom_channel → channelId (ex: 'economie-mondiale' → '123')
+ * - countryChannels[] : tableau top-level pour les pays
+ * - continentChannels[] : tableau top-level pour les continents
+ * - techConfig : configuration du module /tech
  */
 
 'use strict';
 
 const mongoose = require('mongoose');
+
+// ─── Sous-schémas ─────────────────────────────────────────────────────────────
+
+const countryChannelSchema = new mongoose.Schema({
+    code: { type: String, required: true },        // ISO du pays (ex: 'FR')
+    key: String,                                   // 'country-fr' (convention)
+    channelId: { type: String, required: true },
+    webhookUrl: String,
+    continent: String,
+}, { _id: false });
+
+const continentChannelSchema = new mongoose.Schema({
+    continent: { type: String, required: true },
+    categoryId: String,
+    indexChannelId: String,
+    mapChannelId: String,
+    militaryChannelId: String,
+    economyChannelId: String,
+}, { _id: false });
+
+const techChannelSchema = new mongoose.Schema({
+    name: String,   // ex: 'tech-ai'
+    channelId: String,
+    webhookUrl: String,
+}, { _id: false });
+
+// ─── Schéma principal ─────────────────────────────────────────────────────────
 
 const serverConfigSchema = new mongoose.Schema({
     // ─── Identification du serveur ────────────────────────────────────────
@@ -45,7 +78,7 @@ const serverConfigSchema = new mongoose.Schema({
         default: [],
     },
     monitoredCountries: {
-        type: [String], // Codes ISO des pays surveillés
+        type: [String],
         default: [],
     },
 
@@ -62,41 +95,65 @@ const serverConfigSchema = new mongoose.Schema({
         default: ['critical'],
     },
 
-    // ─── Channels Discord ─────────────────────────────────────────────────
+    // ─── Channels Discord (Map nom_channel → channelId) ───────────────────
+    // Convention : utiliser le nom Discord exact du channel comme clé
+    // Exemples: 'breaking-news', 'index-global', 'economie-mondiale', 'nucleaire'
     channels: {
         type: Map,
-        of: String, // Nom du channel → ID du channel Discord
+        of: String,
         default: {},
     },
 
-    // ─── Webhooks Discord ─────────────────────────────────────────────────
+    // ─── Webhooks Discord (Map nom_channel → webhookUrl) ─────────────────
     webhooks: {
         type: Map,
-        of: String, // Catégorie/channel → URL du webhook
+        of: String,
         default: {},
     },
 
-    // ─── Rôles Discord ────────────────────────────────────────────────────
+    // ─── Rôles Discord (Map nom_rôle → roleId) ────────────────────────────
+    // Exemples: 'Alerte-Critique' → '123456', 'Alerte-Europe' → '789012'
     roles: {
         type: Map,
-        of: String, // Nom du rôle → ID du rôle Discord
+        of: String,
         default: {},
+    },
+
+    // ─── Channels pays (tableau top-level) ────────────────────────────────
+    // Séparé du channels Map car ce sont des objets complexes
+    countryChannels: {
+        type: [countryChannelSchema],
+        default: [],
+    },
+
+    // ─── Channels par continent (tableau top-level) ───────────────────────
+    continentChannels: {
+        type: [continentChannelSchema],
+        default: [],
+    },
+
+    // ─── Module Tech Monitor (/tech setup) ────────────────────────────────
+    techConfig: {
+        enabled: { type: Boolean, default: false },
+        preset: { type: String, enum: ['basic', 'standard', 'full'], default: 'basic' },
+        channels: { type: [techChannelSchema], default: [] },
+        enabledCategories: { type: [String], default: [] },
     },
 
     // ─── Permissions du bot ───────────────────────────────────────────────
     adminRoles: {
-        type: [String], // IDs des rôles pouvant utiliser /setup et /panel
+        type: [String],
         default: [],
     },
     modRoles: {
-        type: [String], // IDs des rôles pouvant utiliser /crisis et /monitor
+        type: [String],
         default: [],
     },
 
     // ─── Intervalles configurables ────────────────────────────────────────
     scrapeInterval: {
         type: Number,
-        default: 300_000, // 5 min
+        default: 300_000,
     },
     briefingInterval: {
         type: String,
@@ -116,7 +173,7 @@ const serverConfigSchema = new mongoose.Schema({
         default: false,
     },
 
-    // ─── Sources custom (ajoutées par l'utilisateur) ──────────────────────
+    // ─── Sources custom ───────────────────────────────────────────────────
     customRssFeeds: {
         type: [{
             name: String,
@@ -194,16 +251,45 @@ serverConfigSchema.pre('save', function (next) {
 });
 
 // ─── Méthodes pratiques ──────────────────────────────────────────────────
+
+/**
+ * Obtient l'ID d'un channel par son nom Discord
+ * @param {string} channelName - Nom du channel (ex: 'economie-mondiale')
+ * @returns {string|null}
+ */
 serverConfigSchema.methods.getChannelId = function (channelName) {
-    return this.channels.get(channelName) || null;
+    if (!this.channels) return null;
+    // Supporte Map Mongoose et plain object (après .lean())
+    if (typeof this.channels.get === 'function') {
+        return this.channels.get(channelName) || null;
+    }
+    return this.channels[channelName] || null;
 };
 
+/**
+ * Obtient l'URL webhook d'un channel par son nom
+ * @param {string} key - Nom du channel ou clé webhook
+ * @returns {string|null}
+ */
 serverConfigSchema.methods.getWebhookUrl = function (key) {
-    return this.webhooks.get(key) || null;
+    if (!this.webhooks) return null;
+    if (typeof this.webhooks.get === 'function') {
+        return this.webhooks.get(key) || null;
+    }
+    return this.webhooks[key] || null;
 };
 
+/**
+ * Obtient l'ID d'un rôle par son nom
+ * @param {string} roleName - Nom du rôle (ex: 'Alerte-Critique')
+ * @returns {string|null}
+ */
 serverConfigSchema.methods.getRoleId = function (roleName) {
-    return this.roles.get(roleName) || null;
+    if (!this.roles) return null;
+    if (typeof this.roles.get === 'function') {
+        return this.roles.get(roleName) || null;
+    }
+    return this.roles[roleName] || null;
 };
 
 serverConfigSchema.methods.isCategoryEnabled = function (category) {
@@ -216,6 +302,16 @@ serverConfigSchema.methods.isAlertLevelEnabled = function (level) {
 
 serverConfigSchema.methods.isCountryMonitored = function (countryCode) {
     return this.monitoredCountries.includes(countryCode);
+};
+
+/**
+ * Trouve l'entrée de channel pays par code ISO
+ * @param {string} countryCode - Code ISO (ex: 'FR')
+ * @returns {object|null}
+ */
+serverConfigSchema.methods.getCountryChannel = function (countryCode) {
+    if (!this.countryChannels) return null;
+    return this.countryChannels.find(c => c.code === countryCode.toUpperCase()) || null;
 };
 
 module.exports = mongoose.model('ServerConfig', serverConfigSchema);

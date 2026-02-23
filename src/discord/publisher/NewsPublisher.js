@@ -3,19 +3,15 @@
  * Publication des news dans les bons channels Discord
  * Gère: logique de routage, webhooks, rate limiting, channels pays
  *
- * BUG 6 CORRIGÉ :
- * - Routage vers les channels pays avec la convention country-{code_iso_lowercase}
- * - Une news est publiée dans PLUSIEURS endroits :
- *   1. Channel du pays (si le pays est monitoré) via countryChannels[]
- *   2. Channel de catégorie global (mouvements-militaires, economie-mondiale, etc.)
- *   3. #breaking-news si severity === 'critical'
- * - Lookup par code ISO et par nom de pays (fallback)
- * - Serveurs chargés sans filtre setupComplete (le champ n'existe pas toujours)
+ * V2 :
+ * - Routage basé sur les noms de channels (Map keys)
+ * - countryChannels et continentChannels en top-level
+ * - Boutons interactifs (⭐ Favori, 🌐 Traduire, 📋 Résumé+, 🔗 Source) sous chaque news
  */
 
 'use strict';
 
-const { WebhookClient, Client } = require('discord.js');
+const { WebhookClient, Client, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const logger = require('../../utils/logger');
 const { discordQueue } = require('../../utils/queue');
 const { buildNewsEmbed } = require('../embeds/newsEmbed');
@@ -49,7 +45,6 @@ function setClient(client) {
 function getWebhookClient(webhookUrl) {
     if (!webhookUrl) return null;
     if (webhookCache.has(webhookUrl)) return webhookCache.get(webhookUrl);
-
     try {
         const client = new WebhookClient({ url: webhookUrl });
         webhookCache.set(webhookUrl, client);
@@ -75,13 +70,16 @@ function invalidateWebhook(webhookUrl) {
  * Envoie un embed dans un channel Discord via ID (sans webhook)
  * @param {string} channelId
  * @param {EmbedBuilder} embed
+ * @param {ActionRowBuilder[]} components
  */
-async function sendToChannel(channelId, embed) {
+async function sendToChannel(channelId, embed, components = []) {
     if (!_client || !channelId) return false;
     try {
         const channel = await _client.channels.fetch(channelId).catch(() => null);
         if (channel?.isTextBased()) {
-            await channel.send({ embeds: [embed] });
+            const payload = { embeds: [embed] };
+            if (components.length > 0) payload.components = components;
+            await channel.send(payload);
             return true;
         }
     } catch (err) {
@@ -91,18 +89,21 @@ async function sendToChannel(channelId, embed) {
 }
 
 /**
- * Envoie un embed via webhook (avec nom/avatar custom)
+ * Envoie un embed via webhook
  * @param {string} webhookUrl
  * @param {EmbedBuilder} embed
  * @param {string} username
+ * @param {ActionRowBuilder[]} components
  * @returns {boolean}
  */
-async function sendViaWebhook(webhookUrl, embed, username = 'WorldMonitor') {
+async function sendViaWebhook(webhookUrl, embed, username = 'WorldMonitor', components = []) {
     if (!webhookUrl) return false;
     const wh = getWebhookClient(webhookUrl);
     if (!wh) return false;
     try {
-        await wh.send({ username, embeds: [embed] });
+        const payload = { username, embeds: [embed] };
+        if (components.length > 0) payload.components = components;
+        await wh.send(payload);
         return true;
     } catch (err) {
         if (err.code === 10015 || String(err.message).includes('Unknown Webhook')) {
@@ -112,7 +113,53 @@ async function sendViaWebhook(webhookUrl, embed, username = 'WorldMonitor') {
     }
 }
 
-// ─── Logique de routage (BUG 6 FIX) ─────────────────────────────────────────
+// ─── Boutons interactifs ──────────────────────────────────────────────────────
+
+/**
+ * Construit la rangée de boutons interactifs pour une news
+ * @param {string} newsId - ID MongoDB de la news
+ * @returns {ActionRowBuilder}
+ */
+function buildNewsButtons(newsId) {
+    const id = String(newsId);
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`news_fav_${id}`)
+            .setEmoji('⭐')
+            .setLabel('Favori')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`news_translate_${id}`)
+            .setEmoji('🌐')
+            .setLabel('Traduire')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`news_summary_${id}`)
+            .setEmoji('📋')
+            .setLabel('Résumé+')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`news_sources_${id}`)
+            .setEmoji('🔗')
+            .setLabel('Source')
+            .setStyle(ButtonStyle.Secondary),
+    );
+}
+
+// ─── Logique de routage ───────────────────────────────────────────────────────
+
+/**
+ * Obtient la valeur d'une clé dans un channels Map ou plain object
+ * Supporte les deux formats (Mongoose Map post-lean ou Map instance)
+ * @param {Map|object} channels
+ * @param {string} key
+ * @returns {string|null}
+ */
+function getChannel(channels, key) {
+    if (!channels) return null;
+    if (typeof channels.get === 'function') return channels.get(key) || null;
+    return channels[key] || null;
+}
 
 /**
  * Résout les destinations de publication pour une news dans un serveur.
@@ -122,12 +169,12 @@ async function sendViaWebhook(webhookUrl, embed, username = 'WorldMonitor') {
  *   3. #breaking-news (si critique)
  *
  * @param {object} news - Document News
- * @param {object} serverConfigDoc - Document JSON ServerConfig
+ * @param {object} serverConfigDoc - Document JSON ServerConfig (lean)
  * @returns {Array<{channelId, webhookUrl, label}>}
  */
 function resolvePublishTargets(news, serverConfigDoc) {
     const targets = [];
-    const seen = new Set(); // éviter les doublons de channelId
+    const seen = new Set();
 
     const addTarget = (channelId, webhookUrl, label) => {
         if (!channelId || seen.has(channelId)) return;
@@ -136,7 +183,12 @@ function resolvePublishTargets(news, serverConfigDoc) {
     };
 
     const cfg = serverConfigDoc;
-    const channels = cfg.channels || {};
+    const channels = cfg.channels || {};   // Map lean = plain object avec channel_name → channelId
+    const webhooks = cfg.webhooks || {};
+
+    // Helpers pour lire le channels object
+    const ch = (name) => getChannel(channels, name);
+    const wh = (name) => getChannel(webhooks, name);
 
     // Vérifier que la catégorie est activée pour ce serveur
     const enabledCats = cfg.enabledCategories || [];
@@ -149,47 +201,52 @@ function resolvePublishTargets(news, serverConfigDoc) {
     // ── 1. Channel du PAYS (prioritaire) ──────────────────────────────────
     if (news.country) {
         const code = news.country.toUpperCase();
-        const codeKey = `country-${code.toLowerCase()}`; // convention: country-fr
-
-        // Chercher dans countryChannels[]
-        const countryEntry = (channels.countryChannels || []).find(
-            c => c.code === code || c.key === codeKey
+        // Chercher dans le tableau countryChannels (top-level V2)
+        const countryChannels = cfg.countryChannels || [];
+        const countryEntry = countryChannels.find(
+            c => c.code === code || c.key === `country-${code.toLowerCase()}`
         );
-
         if (countryEntry?.channelId) {
             addTarget(countryEntry.channelId, countryEntry.webhookUrl, `country:${code}`);
         }
     }
 
     // ── 2. Channel de CATÉGORIE global ────────────────────────────────────
+    // Les clés correspondent aux noms Discord des channels créés par setup.js
     const categoryChannelMap = {
-        conflicts: channels.newsChannelId,          // fallback → breaking
-        military_movements: channels.militaryChannelId,
-        nuclear: channels.nuclearChannelId,
-        economy: channels.economyChannelId,
-        maritime: channels.maritimeChannelId,
-        natural_disasters: channels.disastersChannelId,
-        outages: channels.outagesChannelId,
-        terrorism: channels.newsChannelId,          // fallback
-        health: channels.newsChannelId,          // fallback
-        diplomacy: channels.newsChannelId,          // fallback
+        conflicts: ch('conflits-armes') || ch('breaking-news'),
+        military_movements: ch('mouvements-militaires'),
+        nuclear: ch('nucleaire'),
+        economy: ch('economie-mondiale'),
+        maritime: ch('maritime'),
+        natural_disasters: ch('catastrophes-naturelles'),
+        outages: ch('pannes-blackouts'),
+        terrorism: ch('terrorisme-securite') || ch('breaking-news'),
+        health: ch('sante-epidemies') || ch('breaking-news'),
+        diplomacy: ch('diplomatie') || ch('breaking-news'),
+        // Catégories tech (module /tech)
+        tech_ai: ch('tech-ai'),
+        tech_hardware: ch('tech-hardware'),
+        tech_cyber: ch('tech-cyber'),
+        tech_general: ch('tech-general'),
+        tech_gaming: ch('tech-gaming'),
+        tech_crypto: ch('tech-crypto'),
     };
 
     const catChannelId = categoryChannelMap[news.category];
     if (catChannelId) {
-        // Le webhook du channel catégorie (si disponible)
-        const catWebhook = channels.breakingNewsUrl || null; // pas de webhook spécifique par catégorie → null
+        const catWebhook = wh(news.category) || wh('breaking-news') || null;
         addTarget(catChannelId, catWebhook, `category:${news.category}`);
     }
 
     // ── 3. #breaking-news pour les alertes critiques ───────────────────────
-    if (news.severity === 'critical' && channels.newsChannelId) {
-        addTarget(channels.newsChannelId, channels.breakingNewsUrl, 'breaking-news');
+    if (news.severity === 'critical' && ch('breaking-news')) {
+        addTarget(ch('breaking-news'), wh('breaking-news'), 'breaking-news');
     }
 
-    // ── 4. Fallback : si aucune destination, utiliser breaking-news pour high+─
-    if (targets.length === 0 && ['critical', 'high'].includes(news.severity) && channels.newsChannelId) {
-        addTarget(channels.newsChannelId, channels.breakingNewsUrl, 'fallback');
+    // ── 4. Fallback : si aucune destination, utiliser breaking-news pour high+
+    if (targets.length === 0 && ['critical', 'high'].includes(news.severity) && ch('breaking-news')) {
+        addTarget(ch('breaking-news'), wh('breaking-news'), 'fallback');
     }
 
     return targets;
@@ -200,13 +257,13 @@ function resolvePublishTargets(news, serverConfigDoc) {
 /**
  * Publie une news dans un serveur Discord spécifique
  * @param {object} news - Document News MongoDB
- * @param {object} serverConfigDoc - Config du serveur (plain object ou Mongoose doc)
+ * @param {object} serverConfigDoc - Config du serveur (plain object lean)
  */
 async function publishToServer(news, serverConfigDoc) {
     const lang = serverConfigDoc.language || 'fr';
     const targets = resolvePublishTargets(news, serverConfigDoc);
 
-    if (targets.length === 0) return; // News filtrée pour ce serveur
+    if (targets.length === 0) return;
 
     const embed = buildNewsEmbed(news, lang);
     const catData = CATEGORIES[news.category] || {};
@@ -215,15 +272,19 @@ async function publishToServer(news, serverConfigDoc) {
         ? `${countryData.emoji} WorldMonitor — ${countryData.name}`
         : `🌍 WorldMonitor — ${catData.name?.[lang] || news.category || 'Actualité'}`;
 
+    // Boutons interactifs sous chaque news
+    const newsButtons = news._id ? buildNewsButtons(news._id) : null;
+    const components = newsButtons ? [newsButtons] : [];
+
     let published = false;
 
     for (const target of targets) {
         try {
             if (target.webhookUrl) {
-                await sendViaWebhook(target.webhookUrl, embed, username);
+                await sendViaWebhook(target.webhookUrl, embed, username, components);
                 published = true;
             } else if (target.channelId) {
-                await sendToChannel(target.channelId, embed);
+                await sendToChannel(target.channelId, embed, components);
                 published = true;
             }
             logger.debug(`[NewsPublisher] ✅ Publié [${target.label}] dans ${serverConfigDoc.guildId}`);
@@ -233,14 +294,12 @@ async function publishToServer(news, serverConfigDoc) {
     }
 
     if (published) {
-        // Marquer comme publié dans la BDD
         try {
             await News.findByIdAndUpdate(news._id, {
                 $set: { published: true, publishedAt: new Date() },
                 $addToSet: { publishedTo: serverConfigDoc.guildId },
             });
 
-            // Mettre à jour les stats
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             await BotStats.findOneAndUpdate(
@@ -260,7 +319,6 @@ async function publishToServer(news, serverConfigDoc) {
  */
 async function publishNews(news) {
     try {
-        // Charger tous les serveurs configurés (sans filtre setupComplete qui n'existe pas toujours)
         const servers = await ServerConfig.find({}).lean();
 
         if (servers.length === 0) {
@@ -271,7 +329,6 @@ async function publishNews(news) {
         logger.debug(`[NewsPublisher] Publication "${news.title?.substring(0, 50)}" → ${servers.length} serveurs`);
 
         for (const serverData of servers) {
-            // Priorité pour la file : critiques en premier
             const priority = news.severity === 'critical' ? 1
                 : news.severity === 'high' ? 2
                     : news.severity === 'medium' ? 3 : 4;
@@ -293,15 +350,16 @@ async function publishNews(news) {
  */
 async function publishBriefing(embeds, serverConfigDoc) {
     const channels = serverConfigDoc.channels || {};
-    const channelId = channels.briefingChannelId || channels.newsChannelId;
-    const webhookUrl = channels.briefingUrl || channels.breakingNewsUrl;
+    const channelId = getChannel(channels, 'daily-briefing') || getChannel(channels, 'breaking-news');
+    const webhookUrl = getChannel(serverConfigDoc.webhooks || {}, 'daily-briefing')
+        || getChannel(serverConfigDoc.webhooks || {}, 'breaking-news');
 
     if (!channelId && !webhookUrl) {
         logger.debug(`[NewsPublisher] Pas de channel briefing pour ${serverConfigDoc.guildId}`);
         return;
     }
 
-    const batch = embeds.slice(0, 10); // Limite Discord
+    const batch = embeds.slice(0, 10);
 
     try {
         if (webhookUrl) {
@@ -315,7 +373,6 @@ async function publishBriefing(embeds, serverConfigDoc) {
         if (channelId) {
             const channel = await _client?.channels.fetch(channelId).catch(() => null);
             if (channel?.isTextBased()) {
-                // Discord limite : 10 embeds par message
                 for (let i = 0; i < batch.length; i += 10) {
                     await channel.send({ embeds: batch.slice(i, i + 10) });
                 }
@@ -332,6 +389,7 @@ module.exports = {
     publishToServer,
     publishBriefing,
     setClient,
-    // Exposer pour tests
     resolvePublishTargets,
+    buildNewsButtons,
+    getChannel,
 };

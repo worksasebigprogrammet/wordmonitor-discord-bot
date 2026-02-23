@@ -335,4 +335,118 @@ function classifyCategory(text, lang = 'en') {
     return { category: bestCategory, confidence };
 }
 
-module.exports = { CATEGORIES, classifyCategory };
+// ─── CATÉGORIES TECH (module /tech) ───────────────────────────────────────────
+
+const TECH_CATEGORIES = {
+    tech_ai: {
+        name: { fr: 'Intelligence Artificielle', en: 'Artificial Intelligence' },
+        icon: '🤖',
+        color: 0x9B59B6,
+        channelName: 'tech-ai',
+        priority: 2,
+        keywords: {
+            en: [
+                'artificial intelligence', 'machine learning', 'deep learning', 'llm', 'gpt', 'claude',
+                'gemini', 'openai', 'anthropic', 'mistral', 'neural network', 'transformer',
+                'generative ai', 'ai model', 'chatbot', 'agi', 'foundation model', 'diffusion model',
+                'stable diffusion', 'midjourney', 'dall-e', 'sora', 'ai safety', 'alignment',
+            ],
+            fr: [
+                'intelligence artificielle', 'apprentissage machine', 'réseau de neurones',
+                'modèle de langage', 'génératif', 'chatbot', 'ia générative', 'sécurité ia',
+            ],
+        },
+    },
+    tech_hardware: {
+        name: { fr: 'Hardware & Puces', en: 'Hardware & Chips' },
+        icon: '🔧',
+        color: 0xE67E22,
+        channelName: 'tech-hardware',
+        priority: 3,
+        keywords: {
+            en: [
+                'gpu', 'cpu', 'chip', 'semiconductor', 'nvidia', 'amd', 'intel', 'arm',
+                'asml', 'tsmc', 'apple silicon', 'quantum computing', 'processor',
+                'graphics card', 'rtx', 'radeon', 'snapdragon', 'silicon', 'fab', 'foundry',
+            ],
+            fr: [
+                'puce', 'semi-conducteur', 'processeur', 'carte graphique', 'silicium',
+            ],
+        },
+    },
+    tech_cyber: {
+        name: { fr: 'Cybersécurité', en: 'Cybersecurity' },
+        icon: '🛡️',
+        color: 0xE74C3C,
+        channelName: 'tech-cyber',
+        priority: 1,
+        keywords: {
+            en: [
+                'cybersecurity', 'hacker', 'ransomware', 'malware', 'data breach', 'vulnerability',
+                'exploit', 'zero-day', 'phishing', 'ddos', 'apt', 'cyberattack', 'cybercrime',
+                'cve', 'patch', 'infosec', 'bleepingcomputer', 'krebs', 'spyware', 'botnet',
+            ],
+            fr: [
+                'cybersécurité', 'piratage', 'rançongiciel', 'faille', 'violation de données',
+                'cyberattaque', 'logiciel malveillant',
+            ],
+        },
+    },
+    tech_general: {
+        name: { fr: 'Tech Générale', en: 'General Tech' },
+        icon: '💻',
+        color: 0x3498DB,
+        channelName: 'tech-general',
+        priority: 4,
+        keywords: {
+            en: [
+                'technology', 'software', 'startup', 'silicon valley', 'big tech', 'google',
+                'meta', 'microsoft', 'amazon', 'apple', 'iphone', 'android', 'cloud',
+                'ipo', 'acquisition', 'layoff', 'tech company', 'antitrust', 'regulation',
+            ],
+            fr: [
+                'technologie', 'logiciel', 'numérique', 'licenciement', 'acquisition',
+            ],
+        },
+    },
+    tech_gaming: {
+        name: { fr: 'Gaming', en: 'Gaming' },
+        icon: '🎮',
+        color: 0x1ABC9C,
+        channelName: 'tech-gaming',
+        priority: 5,
+        keywords: {
+            en: [
+                'gaming', 'video game', 'ps5', 'xbox', 'nintendo', 'playstation', 'steam',
+                'esports', 'game release', 'game studio', 'blizzard', 'ea games', 'ubisoft',
+                'take-two', 'activision', 'valve', 'riot games', 'game pass', 'epic games',
+            ],
+            fr: [
+                'jeu vidéo', 'jeux vidéo', 'console', 'esport', 'studio de jeu',
+            ],
+        },
+    },
+    tech_crypto: {
+        name: { fr: 'Crypto & Blockchain', en: 'Crypto & Blockchain' },
+        icon: '₿',
+        color: 0xF39C12,
+        channelName: 'tech-crypto',
+        priority: 3,
+        keywords: {
+            en: [
+                'bitcoin', 'ethereum', 'crypto', 'blockchain', 'defi', 'nft', 'web3',
+                'solana', 'binance', 'coinbase', 'ftx', 'stablecoin', 'altcoin',
+                'cryptocurrency', 'token', 'mining', 'wallet', 'dao',
+            ],
+            fr: [
+                'bitcoin', 'ethereum', 'cryptomonnaie', 'blockchain', 'jeton',
+            ],
+        },
+    },
+};
+
+// Fusionner les catégories tech dans CATEGORIES
+Object.assign(CATEGORIES, TECH_CATEGORIES);
+
+module.exports = { CATEGORIES, TECH_CATEGORIES, classifyCategory };
+

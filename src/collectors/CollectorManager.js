@@ -1,224 +1,279 @@
 /**
  * src/collectors/CollectorManager.js
- * Gestionnaire principal des collecteurs
- * Orchestre la file d'attente, le scheduling et le traitement de tous les articles
+ * Gestionnaire de collecte en flux continu
+ *
+ * V2 — Polling staggeré (Enhancement 1) :
+ * - RSS  : groupes de 5 feeds, toutes les 10s → cycle complet ~60-90s
+ * - USGS : toutes les 3 min
+ * - GDELT: toutes les 2 min
+ * - Google News: toutes les 2 min
+ * - Dès qu'un article est détecté → traitement et publication immédiate
  */
 
 'use strict';
 
 const cron = require('node-cron');
 const logger = require('../utils/logger');
-const { collectionQueue, PRIORITY_MAP } = require('../utils/queue');
-const { INTERVALS } = require('../config/constants');
+const { processArticle } = require('../processors/ArticleProcessor');
+const { ALL_RSS_FEEDS } = require('../config/sources');
+const { BOT_LIMITS } = require('../config/constants');
 
-// Collecteurs
-const { collectRSS } = require('./RSSCollector');
-const { collectGoogleNews } = require('./GoogleNewsCollector');
-const { collectGDELT } = require('./GDELTCollector');
-const { collectTwitter } = require('./TwitterCollector');
-const { collectUSGS } = require('./USGSCollector');
-const { collectWeather } = require('./WeatherCollector');
-const { collectNetBlocks } = require('./NetBlocksCollector');
-const { collectReliefWeb } = require('./ReliefWebCollector');
-const { collectNewsAPI } = require('./NewsAPICollector');
-const { collectMediastack } = require('./MediastackCollector');
-const { collectCurrentsAPI } = require('./CurrentsAPICollector');
-const { collectLiveuamap } = require('./LiveuamapCollector');
+// Import paresseux des collecteurs pour éviter les dépendances circulaires
+let RssCollector, GdeltCollector, UsgsCollector, GoogleNewsCollector;
 
-// Processeurs (chargés dynamiquement pour éviter les dépendances circulaires)
-let processArticles = null;
-
-/**
- * Initialise le processeur (chargé après coup pour éviter les dépendances circulaires)
- * @param {Function} processor
- */
-function setProcessor(processor) {
-    processArticles = processor;
+function loadCollectors() {
+    if (!RssCollector) {
+        try { RssCollector = require('./RssCollector'); } catch { logger.warn('[CM] RssCollector manquant'); }
+        try { GdeltCollector = require('./GdeltCollector'); } catch { logger.warn('[CM] GdeltCollector manquant'); }
+        try { UsgsCollector = require('./UsgsCollector'); } catch { logger.warn('[CM] UsgsCollector manquant'); }
+        try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch { logger.warn('[CM] GoogleNewsCollector manquant'); }
+    }
 }
 
-// Statistiques de la session
-const stats = {
-    lastRun: null,
-    totalArticles: 0,
-    totalPublished: 0,
-    cycleCount: 0,
-    errors: 0,
+// ─── État interne ─────────────────────────────────────────────────────────────
+
+const state = {
+    running: false,
+    rssGroups: [],          // Groupes de feeds RSS pour le staggering
+    currentGroupIdx: 0,     // Index du groupe en cours
+    hotZones: new Map(),    // country → count (pour les zones chaudes)
+    stats: {
+        rssPolled: 0,
+        articlesFound: 0,
+        articlesPublished: 0,
+        errors: 0,
+        startTime: null,
+    },
+    intervals: [],          // Références aux setInterval pour le nettoyage
+    cronJobs: [],           // Références aux jobs cron
 };
 
-// Indicateur si un cycle est en cours (pour éviter les chevauchements)
-let isRunning = false;
+// ─── Staggered RSS polling ────────────────────────────────────────────────────
 
-// Zones chaudes (pays avec beaucoup d'événements récents)
-const hotZones = new Map(); // countryCode → { count, lastEvent }
+const RSS_GROUP_SIZE = 5;       // 5 feeds par groupe
+const RSS_STAGGER_INTERVAL = 10_000; // 10 secondes entre chaque groupe
 
 /**
- * Marque un pays comme zone chaude si threshold atteint
- * @param {string} countryCode
+ * Divise les feeds RSS actifs en groupes de RSS_GROUP_SIZE
  */
-function trackHotZone(countryCode) {
-    if (!countryCode) return;
-    const entry = hotZones.get(countryCode) || { count: 0, lastEvent: null, isHot: false };
-
-    // Réinitialiser le compteur si plus d'une heure
-    if (entry.lastEvent && (Date.now() - entry.lastEvent) > 3_600_000) {
-        entry.count = 0;
-        entry.isHot = false;
+function buildRssGroups() {
+    const activeFeeds = ALL_RSS_FEEDS.filter(f => f.active !== false);
+    const groups = [];
+    for (let i = 0; i < activeFeeds.length; i += RSS_GROUP_SIZE) {
+        groups.push(activeFeeds.slice(i, i + RSS_GROUP_SIZE));
     }
-
-    entry.count++;
-    entry.lastEvent = Date.now();
-
-    // Seuil: 10 événements en 1h = zone chaude
-    if (entry.count >= 10 && !entry.isHot) {
-        entry.isHot = true;
-        logger.warn(`[CollectorManager] 🔥 Zone chaude détectée: ${countryCode} (${entry.count} événements en 1h)`);
-    }
-
-    hotZones.set(countryCode, entry);
+    logger.info(`[CM] 📡 ${activeFeeds.length} feeds RSS → ${groups.length} groupes de ${RSS_GROUP_SIZE}`);
+    return groups;
 }
 
 /**
- * Obtient la liste des zones chaudes actuelles
- * @returns {Array<string>} Codes pays des zones chaudes
+ * Collecte un groupe de feeds RSS en parallèle
+ * @param {Array} feedGroup - Groupe de feeds à collecter
+ */
+async function collectRssGroup(feedGroup) {
+    if (!RssCollector) return;
+
+    await Promise.allSettled(feedGroup.map(async (feed) => {
+        try {
+            const articles = await RssCollector.collectFeed(feed);
+            if (articles?.length > 0) {
+                state.stats.articlesFound += articles.length;
+                for (const article of articles.slice(0, BOT_LIMITS.MAX_NEWS_PER_CYCLE)) {
+                    await processArticle(article).catch(err =>
+                        logger.debug(`[CM] Erreur traitement article: ${err.message}`)
+                    );
+                    // Mise à jour des zones chaudes
+                    if (article.country) {
+                        const count = (state.hotZones.get(article.country) || 0) + 1;
+                        state.hotZones.set(article.country, count);
+                    }
+                }
+                logger.debug(`[CM] ✅ ${feed.name}: ${articles.length} article(s)`);
+            }
+            state.stats.rssPolled++;
+        } catch (err) {
+            state.stats.errors++;
+            logger.debug(`[CM] ❌ ${feed.name}: ${err.message}`);
+        }
+    }));
+}
+
+/**
+ * Collecte le prochain groupe de feeds RSS (staggered)
+ * Appelé toutes les RSS_STAGGER_INTERVAL ms
+ */
+async function collectNextRssGroup() {
+    if (!state.rssGroups.length) return;
+
+    const group = state.rssGroups[state.currentGroupIdx];
+    if (group) {
+        await collectRssGroup(group);
+    }
+
+    // Passer au groupe suivant (cycle circulaire)
+    state.currentGroupIdx = (state.currentGroupIdx + 1) % state.rssGroups.length;
+}
+
+// ─── Collecteurs APIs ─────────────────────────────────────────────────────────
+
+async function collectUsgs() {
+    if (!UsgsCollector) return;
+    try {
+        const articles = await UsgsCollector.collect();
+        if (articles?.length > 0) {
+            state.stats.articlesFound += articles.length;
+            for (const article of articles) {
+                await processArticle(article).catch(() => { });
+            }
+            logger.debug(`[CM] 🌍 USGS: ${articles.length} séisme(s)`);
+        }
+    } catch (err) {
+        state.stats.errors++;
+        logger.debug(`[CM] USGS erreur: ${err.message}`);
+    }
+}
+
+async function collectGdelt() {
+    if (!GdeltCollector) return;
+    try {
+        const articles = await GdeltCollector.collect();
+        if (articles?.length > 0) {
+            state.stats.articlesFound += articles.length;
+            for (const article of articles.slice(0, 30)) {
+                await processArticle(article).catch(() => { });
+            }
+            logger.debug(`[CM] 🌐 GDELT: ${articles.length} événement(s)`);
+        }
+    } catch (err) {
+        state.stats.errors++;
+        logger.debug(`[CM] GDELT erreur: ${err.message}`);
+    }
+}
+
+async function collectGoogleNews() {
+    if (!GoogleNewsCollector) return;
+    try {
+        const articles = await GoogleNewsCollector.collect();
+        if (articles?.length > 0) {
+            state.stats.articlesFound += articles.length;
+            for (const article of articles.slice(0, 20)) {
+                await processArticle(article).catch(() => { });
+            }
+            logger.debug(`[CM] 🔍 Google News: ${articles.length} article(s)`);
+        }
+    } catch (err) {
+        state.stats.errors++;
+        logger.debug(`[CM] Google News erreur: ${err.message}`);
+    }
+}
+
+// ─── Zones chaudes ────────────────────────────────────────────────────────────
+
+/**
+ * Nettoie et retourne les zones chaudes actuelles
+ * @returns {Array<{country, count}>}
  */
 function getHotZones() {
-    const zones = [];
-    for (const [code, data] of hotZones.entries()) {
-        if (data.isHot) zones.push(code);
-    }
-    return zones;
+    const sorted = Array.from(state.hotZones.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+
+    // Reset les compteurs après lecture
+    state.hotZones.clear();
+
+    return sorted.map(([country, count]) => ({ country, count }));
 }
 
+// ─── Démarrage ────────────────────────────────────────────────────────────────
+
 /**
- * Exécute un cycle complet de collecte
- * Ordre de priorité: RSS → Google News → GDELT → Twitter → APIs optionnelles
+ * Démarre le gestionnaire de collecte en flux continu
  */
-async function runCollectionCycle() {
-    if (isRunning) {
-        logger.debug('[CollectorManager] Cycle déjà en cours, skip');
+function start() {
+    if (state.running) {
+        logger.warn('[CM] Déjà en cours d\'exécution');
         return;
     }
 
-    if (!processArticles) {
-        logger.warn('[CollectorManager] Processeur non initialisé, skip');
-        return;
-    }
+    loadCollectors();
+    state.running = true;
+    state.stats.startTime = new Date();
 
-    isRunning = true;
-    stats.cycleCount++;
-    stats.lastRun = new Date();
+    // Construire les groupes RSS
+    state.rssGroups = buildRssGroups();
+    state.currentGroupIdx = 0;
 
-    logger.info(`[CollectorManager] 🔄 Cycle #${stats.cycleCount} démarré`);
-    const cycleStart = Date.now();
-    let cycleArticles = 0;
+    // ── RSS : polling staggeré toutes les 10s (un groupe par tick)
+    const rssInterval = setInterval(async () => {
+        if (!state.running) return;
+        await collectNextRssGroup();
+    }, RSS_STAGGER_INTERVAL);
+    state.intervals.push(rssInterval);
 
-    try {
-        // ─── Priorité 1: RSS (source principale la plus stable) ──────────────
-        const rssArticles = await collectRSS({ maxFeeds: 30 }); // Max 30 feeds par cycle
-        const rssProcessed = await processArticles(rssArticles, 'rss');
-        cycleArticles += rssProcessed;
+    // ── USGS : toutes les 3 minutes
+    const usgsJob = cron.schedule('*/3 * * * *', collectUsgs);
+    state.cronJobs.push(usgsJob);
 
-        // ─── Priorité 2: Google News ──────────────────────────────────────────
-        const gnArticles = await collectGoogleNews();
-        const gnProcessed = await processArticles(gnArticles, 'google_news');
-        cycleArticles += gnProcessed;
+    // ── GDELT : toutes les 2 minutes
+    const gdeltJob = cron.schedule('*/2 * * * *', collectGdelt);
+    state.cronJobs.push(gdeltJob);
 
-        // ─── Collecte spécialisée: USGS ───────────────────────────────────────
-        const usgsArticles = await collectUSGS();
-        const usgsProcessed = await processArticles(usgsArticles, 'usgs');
-        cycleArticles += usgsProcessed;
+    // ── Google News : toutes les 2 minutes (décalé de 1 min vs GDELT)
+    setTimeout(() => {
+        const gnJob = cron.schedule('*/2 * * * *', collectGoogleNews);
+        state.cronJobs.push(gnJob);
+    }, 60_000);
 
-        // ─── Priorité 3: GDELT (avec throttle) ───────────────────────────────
-        const gdeltArticles = await collectGDELT();
-        const gdeltProcessed = await processArticles(gdeltArticles, 'gdelt');
-        cycleArticles += gdeltProcessed;
+    // ── Lancement immédiat du premier groupe RSS + USGS
+    setTimeout(async () => {
+        logger.info('[CM] 🚀 Première collecte RSS...');
+        await collectNextRssGroup();
+    }, 3_000);
 
-        // ─── Priorité 4: Twitter (peut échouer sans impact) ───────────────────
-        const twitterArticles = await collectTwitter();
-        const twitterProcessed = await processArticles(twitterArticles, 'twitter');
-        cycleArticles += twitterProcessed;
+    setTimeout(async () => {
+        await collectUsgs();
+        await collectGdelt();
+    }, 10_000);
 
-        // ─── Sources spécialisées ─────────────────────────────────────────────
-        const weatherArticles = await collectWeather();
-        await processArticles(weatherArticles, 'weather');
-
-        const netblocksArticles = await collectNetBlocks();
-        await processArticles(netblocksArticles, 'netblocks');
-
-        // ReliefWeb toutes les 30 minutes seulement
-        if (stats.cycleCount % 6 === 0) {
-            const reliefwebArticles = await collectReliefWeb();
-            await processArticles(reliefwebArticles, 'reliefweb');
-        }
-
-        // ─── APIs optionnelles (si quotas disponibles) ────────────────────────
-        // Liveuamap toutes les 2 cycles
-        if (stats.cycleCount % 2 === 0) {
-            const liveuamapArticles = await collectLiveuamap();
-            await processArticles(liveuamapArticles, 'liveuamap');
-        }
-
-        // NewsAPI toutes les 4h pour économiser le quota
-        if (stats.cycleCount % 48 === 0 && process.env.NEWSAPI_KEY) {
-            const newsAPIArticles = await collectNewsAPI();
-            await processArticles(newsAPIArticles, 'newsapi');
-        }
-
-        // Mediastack une fois par jour
-        if (stats.cycleCount % 288 === 0 && process.env.MEDIASTACK_API) {
-            const mediastackArticles = await collectMediastack();
-            await processArticles(mediastackArticles, 'mediastack');
-        }
-
-        // CurrentsAPI toutes les 4h
-        if (stats.cycleCount % 48 === 0 && process.env.CURRENTS_API) {
-            const currentsArticles = await collectCurrentsAPI();
-            await processArticles(currentsArticles, 'currentsapi');
-        }
-
-    } catch (error) {
-        stats.errors++;
-        logger.error(`[CollectorManager] ❌ Erreur cycle #${stats.cycleCount}: ${error.message}`);
-    } finally {
-        isRunning = false;
-        const duration = ((Date.now() - cycleStart) / 1000).toFixed(1);
-        stats.totalArticles += cycleArticles;
-        logger.info(`[CollectorManager] ✅ Cycle #${stats.cycleCount} terminé en ${duration}s (${cycleArticles} articles traités)`);
-    }
+    logger.info(`[CM] ✅ Collecte en flux continu démarrée`);
+    logger.info(`[CM] 📡 RSS: ${state.rssGroups.length} groupes × ${RSS_STAGGER_INTERVAL / 1000}s = cycle ${Math.round(state.rssGroups.length * RSS_STAGGER_INTERVAL / 1000)}s`);
+    logger.info(`[CM] 🌍 USGS: /3min | GDELT: /2min | Google News: /2min`);
 }
 
 /**
- * Démarre le scheduling automatique des cycles de collecte
+ * Arrête tous les collecteurs proprement
  */
-function startScheduler() {
-    const intervalMinutes = Math.floor(INTERVALS.SCRAPE / 60_000);
+function stop() {
+    state.running = false;
 
-    // Cycle toutes les N minutes (défaut: 5)
-    cron.schedule(`*/${intervalMinutes} * * * *`, async () => {
-        await runCollectionCycle();
-    });
+    for (const interval of state.intervals) {
+        clearInterval(interval);
+    }
+    state.intervals = [];
 
-    logger.info(`[CollectorManager] ⏰ Scheduler démarré - Cycle toutes les ${intervalMinutes} minutes`);
+    for (const job of state.cronJobs) {
+        if (job?.stop) job.stop();
+    }
+    state.cronJobs = [];
+
+    logger.info('[CM] 🛑 Collecte arrêtée');
 }
 
 /**
- * Obtient les statistiques du cycle de collecte
+ * Retourne les statistiques du collecteur
  */
 function getStats() {
+    const uptime = state.stats.startTime
+        ? Math.floor((Date.now() - state.stats.startTime.getTime()) / 1000)
+        : 0;
+
     return {
-        ...stats,
-        isRunning,
-        hotZones: Array.from(hotZones.entries())
-            .filter(([, v]) => v.isHot)
-            .map(([k, v]) => ({ country: k, count: v.count })),
+        ...state.stats,
+        uptime,
+        rssGroupsCount: state.rssGroups.length,
+        currentGroup: state.currentGroupIdx,
+        isRunning: state.running,
     };
 }
 
-module.exports = {
-    runCollectionCycle,
-    startScheduler,
-    setProcessor,
-    trackHotZone,
-    getHotZones,
-    getStats,
-};
+module.exports = { start, stop, getStats, getHotZones };

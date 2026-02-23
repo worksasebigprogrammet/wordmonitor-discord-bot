@@ -547,56 +547,55 @@ async function handleSetupConfirm(interaction, presetId) {
 
         const configData = {
             guildId: guild.id,
+            guildName: guild.name,
             preset: presetId,
+            setupComplete: true,
             language: 'fr',
-            monitoredRegions: preset.continents,
+            enabledContinents: preset.continents,
             enabledCategories: preset.categories,
             alertLevels: preset.alertLevels,
             briefingInterval: preset.briefingInterval,
             briefingEnabled: preset.briefingEnabled,
             scrapeInterval: preset.scrapeInterval,
-            maxNewsPerHour: preset.maxNewsPerHour,
 
-            // Channels globaux
-            channels: {
-                newsChannelId: createdChannels['breaking-news']?.id,
-                indexChannelId: createdChannels['index-global']?.id,
-                briefingChannelId: createdChannels['daily-briefing']?.id,
-                mapChannelId: createdChannels['carte-mondiale']?.id,
-                panelChannelId: createdChannels['panel']?.id,
-                configChannelId: createdChannels['alert-config']?.id,
-                logsChannelId: createdChannels['bot-logs']?.id,
-                statusChannelId: createdChannels['bot-status']?.id,
-                militaryChannelId: createdChannels['mouvements-militaires']?.id,
-                economyChannelId: createdChannels['economie-mondiale']?.id,
-                nuclearChannelId: createdChannels['nucleaire']?.id,
-                maritimeChannelId: createdChannels['maritime']?.id,
-                disastersChannelId: createdChannels['catastrophes-naturelles']?.id,
-                outagesChannelId: createdChannels['pannes-blackouts']?.id,
-                // Channels par continent
-                continentChannels: Object.entries(createdContinent).map(([key, val]) => ({
-                    continent: key,
-                    ...val,
-                })),
-                // Channels par pays — convention de nommage: country-{code_iso_lowercase}
-                countryChannels: createdCountries.map(c => ({
-                    code: c.code,
-                    key: `country-${c.code.toLowerCase()}`,   // BUG 6 FIX: clé standardisée
-                    channelId: c.channelId,
-                    webhookUrl: c.webhookUrl,
-                    continent: c.continent,
-                })),
-            },
+            // ─── Channels (Map: nom_channel → channelId) ──────────────────
+            // Clés = noms Discord exacts pour getChannelId() et resolvePublishTargets()
+            channels: Object.fromEntries(
+                Object.entries(createdChannels)
+                    .filter(([, ch]) => ch?.id)
+                    .map(([name, ch]) => [name, ch.id])
+            ),
 
-            // Webhooks
-            webhooks: {
-                breakingNewsUrl: createdWebhooks['breaking-news'] || null,
-                indexUrl: createdWebhooks['index-global'] || null,
-                briefingUrl: createdWebhooks['daily-briefing'] || null,
-            },
+            // ─── Webhooks (Map: nom_channel → webhookUrl) ─────────────────
+            webhooks: Object.fromEntries(
+                Object.entries(createdWebhooks)
+                    .filter(([, url]) => url)
+                    .map(([name, url]) => [name, url])
+            ),
 
-            // Rôles
-            roles: createdRoles,
+            // ─── Rôles (Map: nom_rôle → roleId) ──────────────────────────
+            // Ex: { 'Alerte-Critique': '123', 'Alerte-Europe': '456' }
+            roles: Object.fromEntries(
+                createdRoles.map(r => [r.name, r.roleId])
+            ),
+
+            // ─── Channels pays (tableau top-level) ────────────────────────
+            countryChannels: createdCountries.map(c => ({
+                code: c.code,
+                key: `country-${c.code.toLowerCase()}`,
+                channelId: c.channelId,
+                webhookUrl: c.webhookUrl || null,
+                continent: c.continent,
+            })),
+
+            // ─── Channels par continent (tableau top-level) ───────────────
+            continentChannels: Object.entries(createdContinent).map(([continent, val]) => ({
+                continent,
+                ...val,
+            })),
+
+            // ─── Pays surveillés ──────────────────────────────────────────
+            monitoredCountries: createdCountries.map(c => c.code),
         };
 
         await ServerConfig.create(configData);
@@ -690,8 +689,10 @@ async function publishRoleAssignEmbed(channel, roles, guild) {
                 chunk.map(r => {
                     const emoji = r.description?.split(' ')[0] || '🔔';
                     const shortName = r.name.replace('Alerte-', '').substring(0, 20);
+                    // Slug pour le customId : « Alerte-Moyen-Orient » → « moyen-orient »
+                    const slug = r.name.replace('Alerte-', '').toLowerCase();
                     return new ButtonBuilder()
-                        .setCustomId(`role_toggle_${r.roleId}`)
+                        .setCustomId(`alert_role_${slug}`)
                         .setLabel(shortName)
                         .setEmoji(emoji)
                         .setStyle(ButtonStyle.Secondary);

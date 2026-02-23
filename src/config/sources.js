@@ -161,6 +161,44 @@ const HEALTH_FEEDS = [
     { name: 'ECDC News', url: 'https://www.ecdc.europa.eu/en/rss.xml', reliability: 9, lang: 'en', category: 'health', active: true },
 ];
 
+// ─── TECH & IA ────────────────────────────────────────────────────────────────
+const TECH_FEEDS = [
+    { name: 'TechCrunch', url: 'https://techcrunch.com/feed/', reliability: 9, lang: 'en', category: 'tech_general', active: true },
+    { name: 'The Verge', url: 'https://www.theverge.com/rss/index.xml', reliability: 8, lang: 'en', category: 'tech_general', active: true },
+    { name: 'Wired', url: 'https://www.wired.com/feed/rss', reliability: 8, lang: 'en', category: 'tech_general', active: true },
+    { name: 'Ars Technica', url: 'https://feeds.arstechnica.com/arstechnica/index', reliability: 9, lang: 'en', category: 'tech_general', active: true },
+    { name: 'MIT Tech Review', url: 'https://www.technologyreview.com/feed/', reliability: 9, lang: 'en', category: 'tech_ai', active: true },
+    { name: 'Hacker News', url: 'https://news.ycombinator.com/rss', reliability: 8, lang: 'en', category: 'tech_general', active: true },
+    { name: 'VentureBeat AI', url: 'https://venturebeat.com/category/ai/feed/', reliability: 8, lang: 'en', category: 'tech_ai', active: true },
+    { name: 'Import AI', url: 'https://jack-clark.net/feed/', reliability: 9, lang: 'en', category: 'tech_ai', active: true },
+    { name: 'Tom\'s Hardware', url: 'https://www.tomshardware.com/feeds/all', reliability: 8, lang: 'en', category: 'tech_hardware', active: true },
+    { name: 'SemiAnalysis', url: 'https://www.semianalysis.com/feed', reliability: 9, lang: 'en', category: 'tech_hardware', active: true },
+    { name: 'Eurogamer', url: 'https://www.eurogamer.net/?format=rss', reliability: 7, lang: 'en', category: 'tech_gaming', active: true },
+    { name: 'IGN News', url: 'https://feeds.ign.com/ign/news', reliability: 7, lang: 'en', category: 'tech_gaming', active: true },
+    { name: 'CoinDesk', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/', reliability: 8, lang: 'en', category: 'tech_crypto', active: true },
+    { name: 'Cointelegraph', url: 'https://cointelegraph.com/rss', reliability: 7, lang: 'en', category: 'tech_crypto', active: true },
+];
+
+// ─── CYBERSÉCURITÉ ────────────────────────────────────────────────────────────
+const CYBER_FEEDS = [
+    { name: 'BleepingComputer', url: 'https://www.bleepingcomputer.com/feed/', reliability: 9, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'Krebs on Security', url: 'https://krebsonsecurity.com/feed/', reliability: 9, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'The Hacker News', url: 'https://feeds.feedburner.com/TheHackersNews', reliability: 8, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'Dark Reading', url: 'https://www.darkreading.com/rss.xml', reliability: 8, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'Recorded Future News', url: 'https://therecord.media/feed', reliability: 9, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'Schneier on Security', url: 'https://www.schneier.com/feed/atom/', reliability: 9, lang: 'en', category: 'tech_cyber', active: true },
+    { name: 'CERT-FR', url: 'https://www.cert.ssi.gouv.fr/feed/', reliability: 10, lang: 'fr', category: 'tech_cyber', active: true },
+];
+
+// ─── GÉOPOLITIQUE SPÉCIALISÉ ──────────────────────────────────────────────────
+const GEOPO_FEEDS = [
+    { name: 'Eurasia Group', url: 'https://www.eurasiagroup.net/live-post/rss', reliability: 9, lang: 'en', category: 'diplomacy', active: true },
+    { name: 'Carnegie Endowment', url: 'https://carnegieendowment.org/rss/', reliability: 9, lang: 'en', category: 'diplomacy', active: true },
+    { name: 'ICG Crisis Group', url: 'https://www.crisisgroup.org/rss', reliability: 10, lang: 'en', category: 'conflicts', active: true },
+    { name: 'ECFR', url: 'https://ecfr.eu/rss/', reliability: 8, lang: 'en', category: 'diplomacy', active: true },
+    { name: 'Inkstick Media', url: 'https://inkstickmedia.com/feed/', reliability: 8, lang: 'en', category: 'military_movements', active: true },
+];
+
 // ─── CONCATÉNATION DE TOUS LES FLUX ──────────────────────────────────────────
 const ALL_RSS_FEEDS = [
     ...AGENCY_FEEDS,
@@ -174,7 +212,11 @@ const ALL_RSS_FEEDS = [
     ...MARITIME_FEEDS,
     ...OSINT_FEEDS,
     ...HEALTH_FEEDS,
+    ...TECH_FEEDS,
+    ...CYBER_FEEDS,
+    ...GEOPO_FEEDS,
 ].filter(f => f.active !== false); // Filtrer immédiatement les sources désactivées
+
 
 // ─── COMPTES TWITTER/X (via Nitter) ──────────────────────────────────────────
 const TWITTER_GROUPS = {
@@ -302,4 +344,7 @@ module.exports = {
     MARITIME_FEEDS,
     OSINT_FEEDS,
     HEALTH_FEEDS,
+    TECH_FEEDS,
+    CYBER_FEEDS,
+    GEOPO_FEEDS,
 };
