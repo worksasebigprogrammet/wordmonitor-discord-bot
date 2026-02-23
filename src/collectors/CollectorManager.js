@@ -23,9 +23,9 @@ let RssCollector, GdeltCollector, UsgsCollector, GoogleNewsCollector;
 
 function loadCollectors() {
     if (!RssCollector) {
-        try { RssCollector = require('./RssCollector'); } catch { logger.warn('[CM] RssCollector manquant'); }
-        try { GdeltCollector = require('./GdeltCollector'); } catch { logger.warn('[CM] GdeltCollector manquant'); }
-        try { UsgsCollector = require('./UsgsCollector'); } catch { logger.warn('[CM] UsgsCollector manquant'); }
+        try { RssCollector = require('./RSSCollector'); } catch { logger.warn('[CM] RssCollector manquant'); }
+        try { GdeltCollector = require('./GDELTCollector'); } catch { logger.warn('[CM] GdeltCollector manquant'); }
+        try { UsgsCollector = require('./USGSCollector'); } catch { logger.warn('[CM] UsgsCollector manquant'); }
         try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch { logger.warn('[CM] GoogleNewsCollector manquant'); }
     }
 }
@@ -34,9 +34,9 @@ function loadCollectors() {
 
 const state = {
     running: false,
-    rssGroups: [],          // Groupes de feeds RSS pour le staggering
-    currentGroupIdx: 0,     // Index du groupe en cours
-    hotZones: new Map(),    // country → count (pour les zones chaudes)
+    rssGroups: [],
+    currentGroupIdx: 0,
+    hotZones: new Map(),
     stats: {
         rssPolled: 0,
         articlesFound: 0,
@@ -44,18 +44,15 @@ const state = {
         errors: 0,
         startTime: null,
     },
-    intervals: [],          // Références aux setInterval pour le nettoyage
-    cronJobs: [],           // Références aux jobs cron
+    intervals: [],
+    cronJobs: [],
 };
 
 // ─── Staggered RSS polling ────────────────────────────────────────────────────
 
-const RSS_GROUP_SIZE = 5;       // 5 feeds par groupe
-const RSS_STAGGER_INTERVAL = 10_000; // 10 secondes entre chaque groupe
+const RSS_GROUP_SIZE = 5;
+const RSS_STAGGER_INTERVAL = 10_000;
 
-/**
- * Divise les feeds RSS actifs en groupes de RSS_GROUP_SIZE
- */
 function buildRssGroups() {
     const activeFeeds = ALL_RSS_FEEDS.filter(f => f.active !== false);
     const groups = [];
@@ -66,10 +63,6 @@ function buildRssGroups() {
     return groups;
 }
 
-/**
- * Collecte un groupe de feeds RSS en parallèle
- * @param {Array} feedGroup - Groupe de feeds à collecter
- */
 async function collectRssGroup(feedGroup) {
     if (!RssCollector) return;
 
@@ -82,7 +75,6 @@ async function collectRssGroup(feedGroup) {
                     await processArticle(article).catch(err =>
                         logger.debug(`[CM] Erreur traitement article: ${err.message}`)
                     );
-                    // Mise à jour des zones chaudes
                     if (article.country) {
                         const count = (state.hotZones.get(article.country) || 0) + 1;
                         state.hotZones.set(article.country, count);
@@ -98,10 +90,6 @@ async function collectRssGroup(feedGroup) {
     }));
 }
 
-/**
- * Collecte le prochain groupe de feeds RSS (staggered)
- * Appelé toutes les RSS_STAGGER_INTERVAL ms
- */
 async function collectNextRssGroup() {
     if (!state.rssGroups.length) return;
 
@@ -110,7 +98,6 @@ async function collectNextRssGroup() {
         await collectRssGroup(group);
     }
 
-    // Passer au groupe suivant (cycle circulaire)
     state.currentGroupIdx = (state.currentGroupIdx + 1) % state.rssGroups.length;
 }
 
@@ -169,16 +156,11 @@ async function collectGoogleNews() {
 
 // ─── Zones chaudes ────────────────────────────────────────────────────────────
 
-/**
- * Nettoie et retourne les zones chaudes actuelles
- * @returns {Array<{country, count}>}
- */
 function getHotZones() {
     const sorted = Array.from(state.hotZones.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10);
 
-    // Reset les compteurs après lecture
     state.hotZones.clear();
 
     return sorted.map(([country, count]) => ({ country, count }));
@@ -186,9 +168,6 @@ function getHotZones() {
 
 // ─── Démarrage ────────────────────────────────────────────────────────────────
 
-/**
- * Démarre le gestionnaire de collecte en flux continu
- */
 function start() {
     if (state.running) {
         logger.warn('[CM] Déjà en cours d\'exécution');
@@ -199,32 +178,26 @@ function start() {
     state.running = true;
     state.stats.startTime = new Date();
 
-    // Construire les groupes RSS
     state.rssGroups = buildRssGroups();
     state.currentGroupIdx = 0;
 
-    // ── RSS : polling staggeré toutes les 10s (un groupe par tick)
     const rssInterval = setInterval(async () => {
         if (!state.running) return;
         await collectNextRssGroup();
     }, RSS_STAGGER_INTERVAL);
     state.intervals.push(rssInterval);
 
-    // ── USGS : toutes les 3 minutes
     const usgsJob = cron.schedule('*/3 * * * *', collectUsgs);
     state.cronJobs.push(usgsJob);
 
-    // ── GDELT : toutes les 2 minutes
     const gdeltJob = cron.schedule('*/2 * * * *', collectGdelt);
     state.cronJobs.push(gdeltJob);
 
-    // ── Google News : toutes les 2 minutes (décalé de 1 min vs GDELT)
     setTimeout(() => {
         const gnJob = cron.schedule('*/2 * * * *', collectGoogleNews);
         state.cronJobs.push(gnJob);
     }, 60_000);
 
-    // ── Lancement immédiat du premier groupe RSS + USGS
     setTimeout(async () => {
         logger.info('[CM] 🚀 Première collecte RSS...');
         await collectNextRssGroup();
@@ -240,9 +213,6 @@ function start() {
     logger.info(`[CM] 🌍 USGS: /3min | GDELT: /2min | Google News: /2min`);
 }
 
-/**
- * Arrête tous les collecteurs proprement
- */
 function stop() {
     state.running = false;
 
@@ -259,9 +229,6 @@ function stop() {
     logger.info('[CM] 🛑 Collecte arrêtée');
 }
 
-/**
- * Retourne les statistiques du collecteur
- */
 function getStats() {
     const uptime = state.stats.startTime
         ? Math.floor((Date.now() - state.stats.startTime.getTime()) / 1000)
