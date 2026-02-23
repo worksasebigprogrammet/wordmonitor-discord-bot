@@ -1,39 +1,21 @@
-/**
- * src/collectors/CollectorManager.js
- * Gestionnaire de collecte en flux continu
- *
- * V3 FIX :
- * - Import corrigé : processArticles (pas processArticle qui n'existe pas)
- * - Les articles sont passés en LOT à processArticles() pour:
- *   a) La déduplication batch
- *   b) La publication automatique via newsPublisher.publishNews()
- * - Logs [DEBUG] explicites à chaque étape du pipeline
- *
- * Pipeline : collectFeed → processArticles → publishNews (automatique)
- */
-
 'use strict';
 
 const cron = require('node-cron');
 const logger = require('../utils/logger');
-// ⚠️ FIX CRITIQUE : le bon export est processArticles (batch), pas processArticle
 const { processArticles } = require('../processors/ArticleProcessor');
 const { ALL_RSS_FEEDS } = require('../config/sources');
 const { BOT_LIMITS } = require('../config/constants');
 
-// Import paresseux des collecteurs pour éviter les dépendances circulaires
 let RssCollector, GdeltCollector, UsgsCollector, GoogleNewsCollector;
 
 function loadCollectors() {
     if (!RssCollector) {
-        try { RssCollector = require('./RssCollector'); } catch { logger.warn('[CM] RssCollector manquant'); }
-        try { GdeltCollector = require('./GdeltCollector'); } catch { logger.warn('[CM] GdeltCollector manquant'); }
-        try { UsgsCollector = require('./UsgsCollector'); } catch { logger.warn('[CM] UsgsCollector manquant'); }
-        try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch { logger.warn('[CM] GoogleNewsCollector manquant'); }
+        try { RssCollector = require('./RSSCollector'); } catch (e) { logger.warn('[CM] RssCollector manquant'); }
+        try { GdeltCollector = require('./GDELTCollector'); } catch (e) { logger.warn('[CM] GdeltCollector manquant'); }
+        try { UsgsCollector = require('./USGSCollector'); } catch (e) { logger.warn('[CM] UsgsCollector manquant'); }
+        try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch (e) { logger.warn('[CM] GoogleNewsCollector manquant'); }
     }
 }
-
-// ─── État interne ─────────────────────────────────────────────────────────────
 
 const state = {
     running: false,
@@ -51,8 +33,6 @@ const state = {
     cronJobs: [],
 };
 
-// ─── Staggered RSS polling ────────────────────────────────────────────────────
-
 const RSS_GROUP_SIZE = 5;
 const RSS_STAGGER_INTERVAL = 10_000;
 
@@ -66,10 +46,6 @@ function buildRssGroups() {
     return groups;
 }
 
-/**
- * Collecte un groupe de feeds RSS en parallèle
- * @param {Array} feedGroup - Groupe de feeds à collecter
- */
 async function collectRssGroup(feedGroup) {
     if (!RssCollector) return;
 
@@ -81,15 +57,13 @@ async function collectRssGroup(feedGroup) {
             if (articles?.length > 0) {
                 state.stats.articlesFound += articles.length;
                 for (const article of articles.slice(0, BOT_LIMITS.MAX_NEWS_PER_CYCLE)) {
-                    await processArticle(article).catch(err =>
-                        logger.debug(`[CM] Erreur traitement article: ${err.message}`)
-                    );
-                    // Mise à jour des zones chaudes
+                    allArticles.push(article);
                     if (article.country) {
                         const count = (state.hotZones.get(article.country) || 0) + 1;
                         state.hotZones.set(article.country, count);
                     }
                 }
+                logger.debug(`[CM] ✅ ${feed.name}: ${articles.length} article(s)`);
             }
             state.stats.rssPolled++;
         } catch (err) {
@@ -98,15 +72,12 @@ async function collectRssGroup(feedGroup) {
         }
     }));
 
-    // Envoyer le lot complet au pipeline (processArticles gère dedup + publication)
     if (allArticles.length > 0) {
         logger.debug(`[CM] 📦 Envoi de ${allArticles.length} articles au pipeline (groupe RSS)`);
         try {
             const saved = await processArticles(allArticles, 'RSS');
             state.stats.articlesProcessed += saved;
-            if (saved > 0) {
-                logger.info(`[CM] 📰 ${saved} news publiées depuis RSS`);
-            }
+            if (saved > 0) logger.info(`[CM] 📰 ${saved} news publiées depuis RSS`);
         } catch (err) {
             logger.error(`[CM] ❌ Erreur pipeline RSS: ${err.message}`);
         }
@@ -115,16 +86,10 @@ async function collectRssGroup(feedGroup) {
 
 async function collectNextRssGroup() {
     if (!state.rssGroups.length) return;
-
     const group = state.rssGroups[state.currentGroupIdx];
-    if (group) {
-        await collectRssGroup(group);
-    }
-
+    if (group) await collectRssGroup(group);
     state.currentGroupIdx = (state.currentGroupIdx + 1) % state.rssGroups.length;
 }
-
-// ─── Collecteurs APIs ─────────────────────────────────────────────────────────
 
 async function collectUsgs() {
     if (!UsgsCollector) return;
@@ -132,12 +97,9 @@ async function collectUsgs() {
         const articles = await UsgsCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            logger.debug(`[CM] 🌍 USGS: ${articles.length} séisme(s), envoi au pipeline...`);
             const saved = await processArticles(articles, 'USGS');
             state.stats.articlesProcessed += saved;
-            if (saved > 0) {
-                logger.info(`[CM] 🌍 ${saved} séisme(s) publiés depuis USGS`);
-            }
+            if (saved > 0) logger.info(`[CM] 🌍 ${saved} séisme(s) publiés depuis USGS`);
         }
     } catch (err) {
         state.stats.errors++;
@@ -151,13 +113,9 @@ async function collectGdelt() {
         const articles = await GdeltCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            logger.debug(`[CM] 🌐 GDELT: ${articles.length} article(s), envoi au pipeline...`);
-            const toProcess = articles.slice(0, 30);
-            const saved = await processArticles(toProcess, 'GDELT');
+            const saved = await processArticles(articles.slice(0, 30), 'GDELT');
             state.stats.articlesProcessed += saved;
-            if (saved > 0) {
-                logger.info(`[CM] 🌐 ${saved} news publiées depuis GDELT`);
-            }
+            if (saved > 0) logger.info(`[CM] 🌐 ${saved} news publiées depuis GDELT`);
         }
     } catch (err) {
         state.stats.errors++;
@@ -171,13 +129,9 @@ async function collectGoogleNews() {
         const articles = await GoogleNewsCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            logger.debug(`[CM] 🔍 Google News: ${articles.length} article(s), envoi au pipeline...`);
-            const toProcess = articles.slice(0, 20);
-            const saved = await processArticles(toProcess, 'GoogleNews');
+            const saved = await processArticles(articles.slice(0, 20), 'GoogleNews');
             state.stats.articlesProcessed += saved;
-            if (saved > 0) {
-                logger.info(`[CM] 🔍 ${saved} news publiées depuis Google News`);
-            }
+            if (saved > 0) logger.info(`[CM] 🔍 ${saved} news publiées depuis Google News`);
         }
     } catch (err) {
         state.stats.errors++;
@@ -185,19 +139,13 @@ async function collectGoogleNews() {
     }
 }
 
-// ─── Zones chaudes ────────────────────────────────────────────────────────────
-
 function getHotZones() {
     const sorted = Array.from(state.hotZones.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10);
-
     state.hotZones.clear();
-
     return sorted.map(([country, count]) => ({ country, count }));
 }
-
-// ─── Démarrage ────────────────────────────────────────────────────────────────
 
 function start() {
     if (state.running) {
@@ -208,7 +156,6 @@ function start() {
     loadCollectors();
     state.running = true;
     state.stats.startTime = new Date();
-
     state.rssGroups = buildRssGroups();
     state.currentGroupIdx = 0;
 
@@ -246,17 +193,10 @@ function start() {
 
 function stop() {
     state.running = false;
-
-    for (const interval of state.intervals) {
-        clearInterval(interval);
-    }
+    for (const interval of state.intervals) clearInterval(interval);
     state.intervals = [];
-
-    for (const job of state.cronJobs) {
-        if (job?.stop) job.stop();
-    }
+    for (const job of state.cronJobs) if (job?.stop) job.stop();
     state.cronJobs = [];
-
     logger.info('[CM] 🛑 Collecte arrêtée');
 }
 
@@ -264,14 +204,7 @@ function getStats() {
     const uptime = state.stats.startTime
         ? Math.floor((Date.now() - state.stats.startTime.getTime()) / 1000)
         : 0;
-
-    return {
-        ...state.stats,
-        uptime,
-        rssGroupsCount: state.rssGroups.length,
-        currentGroup: state.currentGroupIdx,
-        isRunning: state.running,
-    };
+    return { ...state.stats, uptime, rssGroupsCount: state.rssGroups.length, currentGroup: state.currentGroupIdx, isRunning: state.running };
 }
 
 module.exports = { start, stop, getStats, getHotZones };
