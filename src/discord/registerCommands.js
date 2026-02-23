@@ -19,7 +19,7 @@ async function registerCommands(client) {
         throw new Error('DISCORD_TOKEN manquant');
     }
 
-    const commandsPath = path.join(__dirname, '../commands');
+    const commandsPath = path.join(__dirname, 'commands');
     const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
 
     const commands = [];
