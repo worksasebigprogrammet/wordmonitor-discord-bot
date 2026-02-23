@@ -71,7 +71,9 @@ function normalizeItem(item, feed) {
         sourceName: feed.name,
         sourceReliability: feed.reliability || 7,
         publishedAt,
+        originalDate: publishedAt,  // ArticleProcessor attend ce champ
         lang: feed.lang || 'en',
+        sourceLang: feed.lang || 'en',  // ArticleProcessor attend ce champ
         category: feed.category || 'general',
         reliability: feed.reliability || 7,
         // Image si disponible

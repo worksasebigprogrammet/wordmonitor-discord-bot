@@ -191,12 +191,20 @@ function resolvePublishTargets(news, serverConfigDoc) {
     const wh = (name) => getChannel(webhooks, name);
 
     // Vérifier que la catégorie est activée pour ce serveur
+    // Si enabledCategories est vide ou absent → TOUTES les catégories sont autorisées
     const enabledCats = cfg.enabledCategories || [];
-    if (news.category && !enabledCats.includes(news.category)) return targets;
+    if (enabledCats.length > 0 && news.category && !enabledCats.includes(news.category)) {
+        logger.debug(`[NewsPublisher] ⛔ Catégorie "${news.category}" non activée pour guild ${cfg.guildId}`);
+        return targets;
+    }
 
     // Vérifier que le niveau d'alerte est activé
-    const enabledLevels = cfg.alertLevels || ['critical'];
-    if (!enabledLevels.includes(news.severity)) return targets;
+    // Par défaut, tous les niveaux sont activés
+    const enabledLevels = cfg.alertLevels || ['critical', 'high', 'medium', 'low'];
+    if (!enabledLevels.includes(news.severity)) {
+        logger.debug(`[NewsPublisher] ⛔ Sévérité "${news.severity}" non activée pour guild ${cfg.guildId}`);
+        return targets;
+    }
 
     // ── 1. Channel du PAYS (prioritaire) ──────────────────────────────────
     if (news.country) {
@@ -307,9 +315,12 @@ async function publishToServer(news, serverConfigDoc) {
                 { $inc: { newsPublished: 1 } },
                 { upsert: true }
             );
+            logger.debug(`[NewsPublisher] ✅ Statuts de publication mis à jour pour "${news.title?.substring(0, 50)}"`);
         } catch (err) {
             logger.debug(`[NewsPublisher] Erreur MAJ BDD: ${err.message}`);
         }
+    } else {
+        logger.debug(`[NewsPublisher] ⚠️ Aucune publication réussie pour "${news.title?.substring(0, 50)}" dans ${serverConfigDoc.guildId}`);
     }
 }
 
@@ -319,27 +330,32 @@ async function publishToServer(news, serverConfigDoc) {
  */
 async function publishNews(news) {
     try {
+        if (!_client) {
+            logger.warn(`[NewsPublisher] ⚠️ Client Discord non injecté — setClient() manquant`);
+        }
+
         const servers = await ServerConfig.find({}).lean();
 
         if (servers.length === 0) {
-            logger.debug('[NewsPublisher] Aucun serveur configuré');
+            logger.warn('[NewsPublisher] ⚠️ Aucun serveur configuré en base');
             return;
         }
 
-        logger.debug(`[NewsPublisher] Publication "${news.title?.substring(0, 50)}" → ${servers.length} serveurs`);
+        logger.debug(`[NewsPublisher] 📰 Publication "${news.title?.substring(0, 60)}" [${news.severity}/${news.category}] → ${servers.length} serveur(s)`);
 
         for (const serverData of servers) {
-            const priority = news.severity === 'critical' ? 1
-                : news.severity === 'high' ? 2
-                    : news.severity === 'medium' ? 3 : 4;
+            // DiscordPublishQueue.add() attend un STRING de priorité, pas un nombre
+            const priority = news.severity || 'low';
 
             discordQueue.add(
                 () => publishToServer(news, serverData),
-                { priority }
-            );
+                priority
+            ).catch(err => {
+                logger.error(`[NewsPublisher] ❌ Erreur queue pour guild ${serverData.guildId}: ${err.message}`);
+            });
         }
     } catch (error) {
-        logger.error(`[NewsPublisher] Erreur publication globale: ${error.message}`);
+        logger.error(`[NewsPublisher] ❌ Erreur publication globale: ${error.message}\n${error.stack}`);
     }
 }
 

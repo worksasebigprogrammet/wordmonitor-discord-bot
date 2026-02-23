@@ -2,19 +2,22 @@
  * src/collectors/CollectorManager.js
  * Gestionnaire de collecte en flux continu
  *
- * V2 — Polling staggeré (Enhancement 1) :
- * - RSS  : groupes de 5 feeds, toutes les 10s → cycle complet ~60-90s
- * - USGS : toutes les 3 min
- * - GDELT: toutes les 2 min
- * - Google News: toutes les 2 min
- * - Dès qu'un article est détecté → traitement et publication immédiate
+ * V3 FIX :
+ * - Import corrigé : processArticles (pas processArticle qui n'existe pas)
+ * - Les articles sont passés en LOT à processArticles() pour:
+ *   a) La déduplication batch
+ *   b) La publication automatique via newsPublisher.publishNews()
+ * - Logs [DEBUG] explicites à chaque étape du pipeline
+ *
+ * Pipeline : collectFeed → processArticles → publishNews (automatique)
  */
 
 'use strict';
 
 const cron = require('node-cron');
 const logger = require('../utils/logger');
-const { processArticle } = require('../processors/ArticleProcessor');
+// ⚠️ FIX CRITIQUE : le bon export est processArticles (batch), pas processArticle
+const { processArticles } = require('../processors/ArticleProcessor');
 const { ALL_RSS_FEEDS } = require('../config/sources');
 const { BOT_LIMITS } = require('../config/constants');
 
@@ -23,10 +26,10 @@ let RssCollector, GdeltCollector, UsgsCollector, GoogleNewsCollector;
 
 function loadCollectors() {
     if (!RssCollector) {
-        try { RssCollector = require('./RssCollector'); } catch { logger.warn('[CM] RssCollector manquant'); }
-        try { GdeltCollector = require('./GdeltCollector'); } catch { logger.warn('[CM] GdeltCollector manquant'); }
-        try { UsgsCollector = require('./UsgsCollector'); } catch { logger.warn('[CM] UsgsCollector manquant'); }
-        try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch { logger.warn('[CM] GoogleNewsCollector manquant'); }
+        try { RssCollector = require('./RssCollector'); } catch (e) { logger.warn(`[CM] ⚠️ RssCollector manquant: ${e.message}`); }
+        try { GdeltCollector = require('./GdeltCollector'); } catch (e) { logger.warn(`[CM] ⚠️ GdeltCollector manquant: ${e.message}`); }
+        try { UsgsCollector = require('./UsgsCollector'); } catch (e) { logger.warn(`[CM] ⚠️ UsgsCollector manquant: ${e.message}`); }
+        try { GoogleNewsCollector = require('./GoogleNewsCollector'); } catch (e) { logger.warn(`[CM] ⚠️ GoogleNewsCollector manquant: ${e.message}`); }
     }
 }
 
@@ -40,7 +43,7 @@ const state = {
     stats: {
         rssPolled: 0,
         articlesFound: 0,
-        articlesPublished: 0,
+        articlesProcessed: 0,
         errors: 0,
         startTime: null,
     },
@@ -67,28 +70,30 @@ function buildRssGroups() {
 }
 
 /**
- * Collecte un groupe de feeds RSS en parallèle
+ * Collecte un groupe de feeds RSS en parallèle, puis envoie le lot
+ * à processArticles() pour traitement + publication automatique.
  * @param {Array} feedGroup - Groupe de feeds à collecter
  */
 async function collectRssGroup(feedGroup) {
     if (!RssCollector) return;
+
+    const allArticles = [];
 
     await Promise.allSettled(feedGroup.map(async (feed) => {
         try {
             const articles = await RssCollector.collectFeed(feed);
             if (articles?.length > 0) {
                 state.stats.articlesFound += articles.length;
-                for (const article of articles.slice(0, BOT_LIMITS.MAX_NEWS_PER_CYCLE)) {
-                    await processArticle(article).catch(err =>
-                        logger.debug(`[CM] Erreur traitement article: ${err.message}`)
-                    );
-                    // Mise à jour des zones chaudes
+                allArticles.push(...articles);
+                logger.debug(`[CM] ✅ ${feed.name}: ${articles.length} article(s)`);
+
+                // Mise à jour des zones chaudes
+                for (const article of articles) {
                     if (article.country) {
                         const count = (state.hotZones.get(article.country) || 0) + 1;
                         state.hotZones.set(article.country, count);
                     }
                 }
-                logger.debug(`[CM] ✅ ${feed.name}: ${articles.length} article(s)`);
             }
             state.stats.rssPolled++;
         } catch (err) {
@@ -96,6 +101,20 @@ async function collectRssGroup(feedGroup) {
             logger.debug(`[CM] ❌ ${feed.name}: ${err.message}`);
         }
     }));
+
+    // Envoyer le lot complet au pipeline (processArticles gère dedup + publication)
+    if (allArticles.length > 0) {
+        logger.debug(`[CM] 📦 Envoi de ${allArticles.length} articles au pipeline (groupe RSS)`);
+        try {
+            const saved = await processArticles(allArticles, 'RSS');
+            state.stats.articlesProcessed += saved;
+            if (saved > 0) {
+                logger.info(`[CM] 📰 ${saved} news publiées depuis RSS`);
+            }
+        } catch (err) {
+            logger.error(`[CM] ❌ Erreur pipeline RSS: ${err.message}`);
+        }
+    }
 }
 
 /**
@@ -122,14 +141,16 @@ async function collectUsgs() {
         const articles = await UsgsCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            for (const article of articles) {
-                await processArticle(article).catch(() => { });
+            logger.debug(`[CM] 🌍 USGS: ${articles.length} séisme(s), envoi au pipeline...`);
+            const saved = await processArticles(articles, 'USGS');
+            state.stats.articlesProcessed += saved;
+            if (saved > 0) {
+                logger.info(`[CM] 🌍 ${saved} séisme(s) publiés depuis USGS`);
             }
-            logger.debug(`[CM] 🌍 USGS: ${articles.length} séisme(s)`);
         }
     } catch (err) {
         state.stats.errors++;
-        logger.debug(`[CM] USGS erreur: ${err.message}`);
+        logger.warn(`[CM] USGS erreur: ${err.message}`);
     }
 }
 
@@ -139,14 +160,17 @@ async function collectGdelt() {
         const articles = await GdeltCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            for (const article of articles.slice(0, 30)) {
-                await processArticle(article).catch(() => { });
+            logger.debug(`[CM] 🌐 GDELT: ${articles.length} article(s), envoi au pipeline...`);
+            const toProcess = articles.slice(0, 30);
+            const saved = await processArticles(toProcess, 'GDELT');
+            state.stats.articlesProcessed += saved;
+            if (saved > 0) {
+                logger.info(`[CM] 🌐 ${saved} news publiées depuis GDELT`);
             }
-            logger.debug(`[CM] 🌐 GDELT: ${articles.length} événement(s)`);
         }
     } catch (err) {
         state.stats.errors++;
-        logger.debug(`[CM] GDELT erreur: ${err.message}`);
+        logger.warn(`[CM] GDELT erreur: ${err.message}`);
     }
 }
 
@@ -156,14 +180,17 @@ async function collectGoogleNews() {
         const articles = await GoogleNewsCollector.collect();
         if (articles?.length > 0) {
             state.stats.articlesFound += articles.length;
-            for (const article of articles.slice(0, 20)) {
-                await processArticle(article).catch(() => { });
+            logger.debug(`[CM] 🔍 Google News: ${articles.length} article(s), envoi au pipeline...`);
+            const toProcess = articles.slice(0, 20);
+            const saved = await processArticles(toProcess, 'GoogleNews');
+            state.stats.articlesProcessed += saved;
+            if (saved > 0) {
+                logger.info(`[CM] 🔍 ${saved} news publiées depuis Google News`);
             }
-            logger.debug(`[CM] 🔍 Google News: ${articles.length} article(s)`);
         }
     } catch (err) {
         state.stats.errors++;
-        logger.debug(`[CM] Google News erreur: ${err.message}`);
+        logger.warn(`[CM] Google News erreur: ${err.message}`);
     }
 }
 

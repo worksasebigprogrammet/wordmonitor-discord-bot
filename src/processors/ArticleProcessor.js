@@ -135,6 +135,8 @@ async function processArticles(rawArticles, source = 'unknown') {
         // Tri par gravité avant de publier
         newArticles.sort((a, b) => (b.severityScore || 0) - (a.severityScore || 0));
 
+        logger.debug(`[ArticleProcessor] 📡 Publication de ${newArticles.length} nouveau(x) article(s)...`);
+
         for (const article of newArticles) {
             try {
                 await newsPublisher.publishNews(article);
@@ -142,6 +144,8 @@ async function processArticles(rawArticles, source = 'unknown') {
                 logger.error(`[ArticleProcessor] Erreur publication: ${error.message}`);
             }
         }
+    } else if (newArticles.length > 0 && !newsPublisher) {
+        logger.warn(`[ArticleProcessor] ⚠️ ${newArticles.length} articles prêts mais newsPublisher est NULL — setPublisher() n'a pas été appelé !`);
     }
 
     return saved;
