@@ -1,6 +1,6 @@
 'use strict';
 
-const { REST, Routes } = require('@discordjs/rest');
+const { REST, Routes } = require('discord.js');
 const logger = require('../utils/logger');
 const path = require('path');
 const fs = require('fs');
