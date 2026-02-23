@@ -1,83 +1,149 @@
 /**
- * src/collectors/GDELTCollector.js
- * Collecteur GDELT API (Priorité 3)
- * Interroge l'API GDELT v2 pour des événements géopolitiques
- * Gratuit, sans clé API, limite: 1 req/sec
+ * src/collectors/GdeltCollector.js
+ * Collecteur d'articles depuis l'API GDELT v2
+ *
+ * Exporte : collect()
+ * Source : https://api.gdeltproject.org/api/v2/doc/doc
+ * Retourne [] si l'API est indisponible (she est souvent instable)
  */
 
 'use strict';
 
-const axios = require('axios');
 const logger = require('../utils/logger');
-const { rateLimiters, sleep } = require('../utils/rateLimiter');
 
 const GDELT_BASE = 'https://api.gdeltproject.org/api/v2/doc/doc';
-const TIMEOUT = 12000;
+const TIMEOUT_MS = 10_000;
 
-// Requêtes GDELT par thème géopolitique
+// Requêtes GDELT pour différents thèmes géopolitiques
 const GDELT_QUERIES = [
-    { query: 'war OR conflict OR military', label: 'Conflits' },
-    { query: 'nuclear OR ICBM OR missile', label: 'Nucléaire' },
-    { query: 'earthquake OR tsunami OR hurricane', label: 'Catastrophes' },
-    { query: 'sanctions OR embargo OR trade war', label: 'Économie' },
-    { query: 'terrorism OR attack OR bomb', label: 'Terrorisme' },
+    { q: 'war OR conflict OR crisis OR military', category: 'conflicts' },
+    { q: 'sanctions OR ceasefire OR diplomacy OR treaty', category: 'diplomacy' },
+    { q: 'nuclear OR missile OR weapons', category: 'nuclear_wmd' },
 ];
 
+// Déduplication par URL
+const seenUrls = new Set();
+setInterval(() => seenUrls.clear(), 3_600_000 * 3); // Reset toutes les 3h
+
 /**
- * Interroge GDELT pour une requête
- * @param {string} query
+ * Interroge l'API GDELT avec une requête donnée
+ * @param {string} query - Requête de recherche
+ * @param {string} category - Catégorie WorldMonitor
  * @returns {Promise<Array>}
  */
-async function fetchGDELT(query) {
-    await rateLimiters.gdelt.waitForSlot();
+async function queryGdelt(query, category) {
+    const params = new URLSearchParams({
+        query,
+        mode: 'artlist',
+        maxrecords: '25',
+        sort: 'DateDesc',
+        format: 'json',
+    });
+
+    const url = `${GDELT_BASE}?${params.toString()}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
-        const url = `${GDELT_BASE}?query=${encodeURIComponent(query)}&mode=artlist&maxrecords=25&format=json&timespan=1440`; // Dernières 24h
-        const response = await axios.get(url, { timeout: TIMEOUT });
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: { 'User-Agent': 'WorldMonitor/2.0' },
+        });
+        clearTimeout(timeout);
 
-        if (!response.data || !response.data.articles) {
+        if (!response.ok) {
+            logger.debug(`[GdeltCollector] HTTP ${response.status} pour "${query}"`);
             return [];
         }
 
-        return response.data.articles.map(art => ({
-            title: art.title || '',
-            description: art.seenbefore ? `Repris ${art.seenbefore} fois` : '',
-            url: art.url || '',
-            imageUrl: null,
-            sourceName: art.domain || 'GDELT',
-            sourceType: 'gdelt',
-            sourceReliability: 7,
-            sourceLang: art.language || 'en',
-            originalDate: art.seendate ? new Date(art.seendate.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z')) : new Date(),
-            gdeltExtra: {
-                tone: art.tone,
-                themes: art.themes,
-                locations: art.locations,
-            },
-        })).filter(a => a.title && a.url);
+        const text = await response.text();
+        if (!text?.trim()) return [];
+
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            // GDELT renvoie parfois du HTML d'erreur au lieu de JSON
+            logger.debug(`[GdeltCollector] Réponse non-JSON pour "${query}"`);
+            return [];
+        }
+
+        const articles = data?.articles || [];
+        const results = [];
+
+        for (const article of articles) {
+            const url2 = article.url;
+            if (!url2 || seenUrls.has(url2)) continue;
+            seenUrls.add(url2);
+
+            let publishedAt;
+            try {
+                // GDELT format: "20240115T120000Z"
+                publishedAt = article.seendate
+                    ? new Date(article.seendate.replace(
+                        /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/,
+                        '$1-$2-$3T$4:$5:$6Z'
+                    ))
+                    : new Date();
+                if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+            } catch {
+                publishedAt = new Date();
+            }
+
+            results.push({
+                title: (article.title || '').trim().substring(0, 500),
+                description: (article.title || '').substring(0, 500), // GDELT ne donne que le titre
+                url: url2,
+                source: article.domain || 'GDELT',
+                sourceName: article.domain || 'GDELT',
+                sourceReliability: 7,
+                publishedAt,
+                lang: article.language === 'French' ? 'fr' : 'en',
+                category,
+                reliability: 7,
+                country: article.sourcecountry || '',
+                continent: '',
+                raw: article,
+            });
+        }
+
+        return results;
     } catch (error) {
-        logger.warn(`[GDELT] Erreur pour "${query}": ${error.message}`);
+        clearTimeout(timeout);
+        if (error.name === 'AbortError') {
+            logger.debug(`[GdeltCollector] Timeout pour "${query}"`);
+        } else {
+            logger.debug(`[GdeltCollector] Erreur: ${error.message}`);
+        }
         return [];
     }
 }
 
 /**
- * Collecte toutes les requêtes GDELT en séquence
- * @returns {Promise<Array>}
+ * Collecte les événements depuis GDELT (multiples requêtes)
+ * @returns {Promise<Array>} Tableau d'articles standardisés
  */
-async function collectGDELT() {
-    logger.info(`[GDELT] 🔄 Collecte GDELT (${GDELT_QUERIES.length} requêtes)...`);
-    const allArticles = [];
+async function collect() {
+    try {
+        // Exécuter les requêtes en parallèle mais ne pas faire échouer si l'une plante
+        const results = await Promise.allSettled(
+            GDELT_QUERIES.map(q => queryGdelt(q.q, q.category))
+        );
 
-    for (const { query, label } of GDELT_QUERIES) {
-        const articles = await fetchGDELT(query);
-        allArticles.push(...articles);
-        logger.debug(`[GDELT] ${label}: ${articles.length} articles`);
-        await sleep(1200); // Respecter le rate limit 1 req/sec
+        const articles = results
+            .filter(r => r.status === 'fulfilled')
+            .flatMap(r => r.value);
+
+        if (articles.length > 0) {
+            logger.debug(`[GdeltCollector] ${articles.length} article(s) collected`);
+        }
+
+        return articles;
+    } catch (error) {
+        logger.debug(`[GdeltCollector] Erreur globale: ${error.message}`);
+        return [];
     }
-
-    logger.info(`[GDELT] ✅ ${allArticles.length} articles collectés`);
-    return allArticles;
 }
 
-module.exports = { collectGDELT, fetchGDELT };
+module.exports = { collect };

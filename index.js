@@ -2,12 +2,17 @@
  * index.js
  * Point d'entrée principal de WorldMonitor
  * Démarrage du bot Discord, connexion DB, enregistrement commandes, schedulers
+ *
+ * V2 FIX :
+ * - registerCommands() appelé dans client.once('ready') avec le client → client.application.id disponible
+ * - Import CollectorManager via { start, stop, getStats, getHotZones } uniquement
+ * - setProcessor / runCollectionCycle supprimés (gérés en interne par CollectorManager)
  */
 
 'use strict';
 
 require('dotenv').config();
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Options } = require('discord.js');
 const logger = require('./src/utils/logger');
 const { connectDatabase } = require('./src/database/connection');
 const { scheduleCleanup } = require('./src/database/cleanup');
@@ -15,8 +20,9 @@ const { runHealthChecks } = require('./src/utils/healthCheck');
 const { checkRecovery, recordStartup } = require('./src/utils/recoveryManager');
 const commandHandler = require('./src/discord/CommandHandler');
 const { registerCommands } = require('./src/discord/registerCommands');
-const { runCollectionCycle, startScheduler, setProcessor } = require('./src/collectors/CollectorManager');
-const { processArticles, setPublisher } = require('./src/processors/ArticleProcessor');
+// CollectorManager V2 : exporte { start, stop, getStats, getHotZones }
+const { start: startCollector, stop: stopCollector } = require('./src/collectors/CollectorManager');
+const { setPublisher } = require('./src/processors/ArticleProcessor');
 const { publishNews, setClient } = require('./src/discord/publisher/NewsPublisher');
 const { startIndexScheduler } = require('./src/discord/publisher/IndexPublisher');
 const { startBriefingScheduler } = require('./src/discord/publisher/BriefingPublisher');
@@ -29,8 +35,8 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
     ],
     partials: [Partials.Channel],
-    // Désactiver le cache des messages pour économiser la mémoire
-    makeCache: require('discord.js').Options.cacheWithLimits({
+    // Limiter le cache pour économiser la mémoire (Pterodactyl)
+    makeCache: Options.cacheWithLimits({
         MessageManager: 0,
         ReactionManager: 0,
         GuildMemberManager: { maxSize: 50 },
@@ -44,24 +50,15 @@ async function start() {
     logger.info('='.repeat(60));
 
     try {
-        // 1. Connexion MongoDB
+        // 1. Connexion MongoDB Atlas
         logger.info('[Boot] 🔌 Connexion à MongoDB...');
         await connectDatabase();
 
-        // 2. Chargement des commandes
+        // 2. Chargement des commandes en mémoire
         logger.info('[Boot] 📝 Chargement des commandes...');
         commandHandler.loadCommands();
 
-        // 3. Enregistrement des commandes (si DISCORD_CLIENT_ID présent)
-        if (process.env.DISCORD_CLIENT_ID) {
-            try {
-                await registerCommands();
-            } catch (e) {
-                logger.warn(`[Boot] Commandes non enregistrées: ${e.message}`);
-            }
-        }
-
-        // 4. Connexion Discord
+        // 3. Connexion Discord (les commandes seront enregistrées dans ready)
         logger.info('[Boot] 🤖 Connexion à Discord...');
         await client.login(process.env.DISCORD_TOKEN);
 
@@ -71,55 +68,67 @@ async function start() {
     }
 }
 
-// ─── Événements Discord ───────────────────────────────────────────────────────
-
+// ─── Événement ready ─────────────────────────────────────────────────────────
 client.once('ready', async () => {
     logger.info(`[Discord] ✅ Connecté en tant que ${client.user.tag}`);
     logger.info(`[Discord] 📡 Serveurs: ${client.guilds.cache.size}`);
+    logger.info(`[Discord] 🆔 Application ID: ${client.application?.id}`);
 
     // Présence du bot
     client.user.setPresence({
-        activities: [{ name: '🌍 Surveillance mondiale', type: 3 }], // Type 3 = Watching
+        activities: [{ name: '🌍 Surveillance mondiale', type: 3 }], // Watching
         status: 'online',
     });
 
-    // Injecter les dépendances (éviter les cycles)
-    setProcessor(processArticles);
+    // ── 1. Enregistrement automatique des commandes slash ─────────────────
+    // Nécessite que le client soit connecté pour avoir client.application.id
+    logger.info('[Boot] 📝 Enregistrement des commandes slash...');
+    try {
+        await registerCommands(client);
+    } catch (e) {
+        logger.warn(`[Boot] ⚠️ Commandes non enregistrées: ${e.message}`);
+    }
+
+    // ── 2. Injection des dépendances ──────────────────────────────────────
+    // Publisher Discord pour que ArticleProcessor publie les news
     setPublisher({ publishNews });
-    setClient(client); // Bug 6: client discord pour publication directe en channel
+    // Client Discord pour publication directe dans les channels (sans webhook)
+    setClient(client);
 
-    // Health checks
-    await runHealthChecks();
+    // ── 3. Health checks & Recovery ──────────────────────────────────────
+    await runHealthChecks().catch(err =>
+        logger.warn(`[Boot] Health check: ${err.message}`)
+    );
 
-    // Recovery check
-    const recovery = await checkRecovery();
-    await recordStartup(recovery.needed);
+    const recovery = await checkRecovery().catch(() => ({ needed: false }));
+    await recordStartup(recovery.needed).catch(() => { });
 
-    // Nettoyage automatique
+    // ── 4. Nettoyage automatique de la base ───────────────────────────────
     scheduleCleanup();
 
-    // Schedulers
+    // ── 5. Schedulers (index, briefing) ───────────────────────────────────
     startIndexScheduler(client);
-    startBriefingScheduler();
 
-    // Démarrer le collecteur principal
-    if (recovery.needed) {
-        logger.info('[Boot] 🔄 Mode recovery - Collecte immédiate...');
-        await runCollectionCycle();
+    try {
+        startBriefingScheduler();
+    } catch (e) {
+        logger.warn(`[Boot] BriefingScheduler: ${e.message}`);
     }
-    startScheduler();
+
+    // ── 6. Démarrage de la collecte en flux continu ───────────────────────
+    startCollector();
 
     logger.info('='.repeat(60));
     logger.info('   🌍 WorldMonitor est opérationnel !');
     logger.info('='.repeat(60));
 });
 
-// Gestion des interactions (commandes + composants)
+// ─── Gestion des interactions ─────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
     await commandHandler.handleInteraction(interaction);
 });
 
-// Déconnexion / reconnexion
+// ─── Événements de connexion ──────────────────────────────────────────────────
 client.on('disconnect', () => {
     logger.warn('[Discord] ⚠️ Déconnecté de Discord');
 });
@@ -131,7 +140,6 @@ client.on('error', (error) => {
 // ─── Gestion des erreurs non catchées ────────────────────────────────────────
 process.on('uncaughtException', (error) => {
     logger.error(`[Process] ❌ Exception non catchée: ${error.message}\n${error.stack}`);
-    // Ne pas quitter - PM2 gère les redémarrages si besoin
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -139,10 +147,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('SIGTERM', async () => {
-    logger.info('[Process] 📴 Signal SIGTERM reçu - Arrêt propre...');
+    logger.info('[Process] 📴 Signal SIGTERM - Arrêt propre...');
+    stopCollector();
     client.destroy();
-    const { closeDatabase } = require('./src/database/connection');
-    await closeDatabase();
+    try {
+        const { closeDatabase } = require('./src/database/connection');
+        await closeDatabase();
+    } catch { }
     process.exit(0);
 });
 

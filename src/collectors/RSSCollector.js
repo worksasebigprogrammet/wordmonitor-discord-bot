@@ -1,158 +1,123 @@
 /**
- * src/collectors/RSSCollector.js
- * Collecteur RSS - Source principale (Priorité 1)
- * Parse 80+ flux RSS en séquence avec gestion d'erreurs et fallback
+ * src/collectors/RssCollector.js
+ * Collecteur de flux RSS
+ *
+ * Exporte : collectFeed(feed)
+ * Utilise : rss-parser
+ * Format de retour : tableau d'articles standardisés
  */
 
 'use strict';
 
-const RSSParser = require('rss-parser');
-const { ALL_RSS_FEEDS } = require('../config/sources');
+const Parser = require('rss-parser');
 const logger = require('../utils/logger');
-const { sleep } = require('../utils/rateLimiter');
-const { BOT_LIMITS } = require('../config/constants');
 
-// Personnalisation du parser RSS pour catcher les formats non-standard
-const parser = new RSSParser({
-    timeout: 10000,
+// Instance du parser RSS, réutilisée pour toutes les requêtes
+const parser = new Parser({
+    timeout: 10_000, // 10 secondes max par feed
     headers: {
-        'User-Agent': 'WorldMonitor/1.0 RSS Reader',
-        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+        'User-Agent': 'WorldMonitor/2.0 (+https://github.com/worldmonitor)',
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
     },
     customFields: {
         item: [
-            ['media:content', 'mediaContent', { keepArray: false }],
-            ['media:thumbnail', 'mediaThumbnail', { keepArray: false }],
-            ['enclosure', 'enclosure', { keepArray: false }],
+            ['media:content', 'mediaContent'],
+            ['media:thumbnail', 'mediaThumbnail'],
+            ['dc:creator', 'creator'],
         ],
     },
 });
 
-/**
- * Extrait l'image d'un article RSS depuis différentes sources
- * @param {object} item - Item RSS
- * @returns {string|null}
- */
-function extractImage(item) {
-    try {
-        if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
-        if (item.mediaThumbnail?.$?.url) return item.mediaThumbnail.$.url;
-        if (item.enclosure?.url) return item.enclosure.url;
-        // Tenter d'extraire depuis le contenu HTML
-        const content = item.content || item['content:encoded'] || '';
-        const imgMatch = content.match(/<img[^>]+src=["']([^"']+)["']/i);
-        if (imgMatch) return imgMatch[1];
-    } catch (_) { }
-    return null;
-}
+// Déduplication par URL dans la session courante (évite les doublons entre cycles)
+const seenUrls = new Set();
+// Nettoyer le cache toutes les heures
+setInterval(() => seenUrls.clear(), 3_600_000);
 
 /**
- * Convertit un item RSS en format standard WorldMonitor
- * @param {object} item - Item RSS brut
- * @param {object} feed - Configuration de la source
- * @returns {object} Article normalisé
+ * Normalise un item RSS en article standardisé WorldMonitor
+ * @param {object} item - Item RSS brut (rss-parser)
+ * @param {object} feed - Configuration du feed source
+ * @returns {object|null} Article standardisé
  */
 function normalizeItem(item, feed) {
+    // Extraire l'URL (link ou guid)
+    const url = item.link || item.guid || null;
+    if (!url) return null;
+
+    // Extraire la date de publication
+    let publishedAt;
+    try {
+        publishedAt = (item.pubDate || item.isoDate)
+            ? new Date(item.pubDate || item.isoDate)
+            : new Date();
+        if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+    } catch {
+        publishedAt = new Date();
+    }
+
+    // Description : nettoyer le HTML basique
+    const rawDesc = item.contentSnippet || item.content || item.summary || item.description || '';
+    const description = rawDesc
+        .replace(/<[^>]+>/g, ' ')  // strip HTML
+        .replace(/\s{2,}/g, ' ')   // espaces multiples
+        .trim()
+        .substring(0, 1000);
+
     return {
-        title: item.title?.trim() || 'Titre inconnu',
-        description: item.contentSnippet || item.summary || item.description || '',
-        url: item.link || item.guid || '',
-        imageUrl: extractImage(item),
+        title: (item.title || '').trim().substring(0, 500),
+        description,
+        url,
+        source: feed.name,
         sourceName: feed.name,
-        sourceType: 'rss',
-        sourceReliability: feed.reliability,
-        sourceLang: feed.lang,
-        originalDate: item.pubDate ? new Date(item.pubDate) : new Date(),
-        raw: {
-            guid: item.guid,
-            categories: item.categories,
-        },
+        sourceReliability: feed.reliability || 7,
+        publishedAt,
+        lang: feed.lang || 'en',
+        category: feed.category || 'general',
+        reliability: feed.reliability || 7,
+        // Image si disponible
+        imageUrl: item.mediaContent?.$.url
+            || item.mediaThumbnail?.$.url
+            || item.enclosure?.url
+            || null,
+        raw: item,
     };
 }
 
 /**
- * Collecte les articles d'un seul flux RSS
- * @param {object} feed - Configuration du flux
- * @returns {Promise<Array>} Articles collectés
+ * Collecte les articles d'un flux RSS
+ * @param {object} feed - { name, url, reliability, lang, category }
+ * @returns {Promise<Array>} Tableau d'articles standardisés ([] en cas d'erreur)
  */
-async function fetchFeed(feed) {
-    const articles = [];
+async function collectFeed(feed) {
+    if (!feed?.url) return [];
 
     try {
-        const result = await parser.parseURL(feed.url);
+        const parsedFeed = await parser.parseURL(feed.url);
+        const items = parsedFeed?.items || [];
 
-        for (const item of (result.items || []).slice(0, 20)) {
-            const normalized = normalizeItem(item, feed);
-            if (normalized.url && normalized.title) {
-                articles.push(normalized);
-            }
+        const articles = [];
+
+        for (const item of items) {
+            const article = normalizeItem(item, feed);
+            if (!article) continue;
+
+            // Déduplication par URL
+            if (seenUrls.has(article.url)) continue;
+            seenUrls.add(article.url);
+
+            // Ignorer les articles trop vieux (> 24h)
+            const ageHours = (Date.now() - article.publishedAt.getTime()) / 3_600_000;
+            if (ageHours > 24) continue;
+
+            articles.push(article);
         }
 
-        logger.debug(`[RSS] ✅ ${feed.name}: ${articles.length} articles`);
-        feed.errorCount = 0; // Reset error count on success
-        feed.lastFetch = new Date();
+        return articles;
     } catch (error) {
-        feed.errorCount = (feed.errorCount || 0) + 1;
-        logger.warn(`[RSS] ⚠️ ${feed.name} (${feed.url}): ${error.message}`);
-
-        // Désactiver temporairement si trop d'erreurs consécutives
-        if (feed.errorCount >= 5) {
-            feed.active = false;
-            logger.error(`[RSS] ❌ ${feed.name} désactivé après 5 erreurs consécutives`);
-        }
-    }
-
-    return articles;
-}
-
-/**
- * Collecte tous les flux RSS en séquence (une source à la fois)
- * @param {object} options - Options de collecte
- * @param {number} options.maxFeeds - Nombre max de feeds à collecter
- * @returns {Promise<Array>} Tous les articles collectés
- */
-async function collectRSS(options = {}) {
-    const { maxFeeds = ALL_RSS_FEEDS.length } = options;
-    const allArticles = [];
-
-    const activeFeeds = ALL_RSS_FEEDS
-        .filter(f => f.active !== false)
-        .slice(0, maxFeeds);
-
-    logger.info(`[RSS] 🔄 Démarrage collecte de ${activeFeeds.length} flux RSS...`);
-
-    for (const feed of activeFeeds) {
-        const articles = await fetchFeed(feed);
-        allArticles.push(...articles);
-
-        // Délai entre les sources pour économiser la RAM et être poli
-        await sleep(BOT_LIMITS.SOURCE_DELAY_MS);
-    }
-
-    logger.info(`[RSS] ✅ Collecte terminée: ${allArticles.length} articles bruts de ${activeFeeds.length} sources`);
-    return allArticles;
-}
-
-/**
- * Collecte uniquement les feeds d'une catégorie spécifique
- * @param {string} category - Catégorie à collecter
- * @returns {Promise<Array>}
- */
-async function collectRSSByCategory(category) {
-    const categoryFeeds = ALL_RSS_FEEDS.filter(f => f.category === category && f.active !== false);
-
-    if (categoryFeeds.length === 0) {
+        // Erreurs silencieuses — les feeds tombent souvent
+        logger.debug(`[RssCollector] ${feed.name}: ${error.message}`);
         return [];
     }
-
-    const allArticles = [];
-    for (const feed of categoryFeeds) {
-        const articles = await fetchFeed(feed);
-        allArticles.push(...articles);
-        await sleep(1000);
-    }
-
-    return allArticles;
 }
 
-module.exports = { collectRSS, collectRSSByCategory, fetchFeed };
+module.exports = { collectFeed };

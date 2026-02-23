@@ -1,95 +1,143 @@
 /**
  * src/collectors/GoogleNewsCollector.js
- * Collecteur Google News via scraping RSS (Priorité 2)
- * Gratuit, sans clé API mais sensible au blocage
+ * Collecteur d'articles depuis Google News RSS
+ *
+ * Exporte : collect()
+ * Utilise : rss-parser
+ * Sources : 3 flux Google News (géopolitique EN + FR)
+ * Retourne [] si les flux sont indisponibles
  */
 
 'use strict';
 
-const RSSParser = require('rss-parser');
+const Parser = require('rss-parser');
 const logger = require('../utils/logger');
-const { sleep } = require('../utils/rateLimiter');
 
-const parser = new RSSParser({
-    timeout: 10000,
+const parser = new Parser({
+    timeout: 10_000,
     headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WorldMonitor/1.0)',
+        'User-Agent': 'Mozilla/5.0 (compatible; WorldMonitor/2.0)',
+        'Accept': 'application/rss+xml, application/xml, */*',
     },
 });
 
-// Requêtes Google News par thème prioritaire
-const NEWS_QUERIES = [
-    { query: 'breaking news war conflict', lang: 'en', country: 'US', label: 'Conflits EN' },
-    { query: 'nuclear missile ICBM', lang: 'en', country: 'US', label: 'Nucléaire EN' },
-    { query: 'earthquake tsunami disaster', lang: 'en', country: 'US', label: 'Catastrophes EN' },
-    { query: 'actualité guerre conflit', lang: 'fr', country: 'FR', label: 'Conflits FR' },
-    { query: 'actualité internationale', lang: 'fr', country: 'FR', label: 'International FR' },
-    { query: 'Ukraine Russia war', lang: 'en', country: 'US', label: 'Ukraine' },
-    { query: 'Israel Gaza Palestine', lang: 'en', country: 'US', label: 'Gaza' },
-    { query: 'China Taiwan Taiwan Strait', lang: 'en', country: 'US', label: 'Taïwan' },
+// Flux Google News à collecter
+const GOOGLE_NEWS_FEEDS = [
+    {
+        url: 'https://news.google.com/rss/search?q=geopolitics+war+conflict&hl=en&gl=US&ceid=US:en',
+        lang: 'en',
+        category: 'conflicts',
+    },
+    {
+        url: 'https://news.google.com/rss/search?q=war+military+sanctions&hl=en&gl=US&ceid=US:en',
+        lang: 'en',
+        category: 'military_movements',
+    },
+    {
+        url: 'https://news.google.com/rss/search?q=crise+internationale+conflit&hl=fr&gl=FR&ceid=FR:fr',
+        lang: 'fr',
+        category: 'conflicts',
+    },
 ];
 
+// Déduplication par URL
+const seenUrls = new Set();
+setInterval(() => seenUrls.clear(), 3_600_000 * 2); // Reset toutes les 2h
+
 /**
- * Construit l'URL Google News RSS pour une requête
- * @param {string} query
- * @param {string} lang
- * @param {string} country
+ * Nettoie les titres Google News qui contiennent souvent " - Source"
+ * @param {string} title
  * @returns {string}
  */
-function buildGoogleNewsURL(query, lang = 'en', country = 'US') {
-    const ceid = `${country}:${lang}`;
-    const encoded = encodeURIComponent(query);
-    return `https://news.google.com/rss/search?q=${encoded}&hl=${lang}&gl=${country}&ceid=${ceid}`;
+function cleanGoogleTitle(title) {
+    if (!title) return '';
+    // Google News: "Ukraine ceasefire talks - BBC News" → "Ukraine ceasefire talks"
+    return title.replace(/\s[-–—]\s[^-–—]{2,50}$/, '').trim();
 }
 
 /**
- * Collecte une requête Google News
- * @param {object} queryConfig
+ * Collecte les articles d'un seul flux Google News
+ * @param {object} feedConfig - { url, lang, category }
  * @returns {Promise<Array>}
  */
-async function fetchGoogleNews(queryConfig) {
-    const { query, lang, country, label } = queryConfig;
-    const url = buildGoogleNewsURL(query, lang, country);
-
+async function collectOneFeed(feedConfig) {
     try {
-        const feed = await parser.parseURL(url);
-        const articles = (feed.items || []).slice(0, 15).map(item => ({
-            title: item.title?.replace(/\s*-\s*[\w\s]+$/, '').trim() || '', // Supprimer " - Source" à la fin
-            description: item.contentSnippet || '',
-            url: item.link || '',
-            imageUrl: null,
-            sourceName: `Google News (${label})`,
-            sourceType: 'google_news',
-            sourceReliability: 7,
-            sourceLang: lang,
-            originalDate: item.pubDate ? new Date(item.pubDate) : new Date(),
-            googleSource: item.source?.$?.url || '',
-        })).filter(a => a.title && a.url);
+        const feed = await parser.parseURL(feedConfig.url);
+        const items = feed?.items || [];
+        const results = [];
 
-        logger.debug(`[GoogleNews] ${label}: ${articles.length} articles`);
-        return articles;
+        for (const item of items) {
+            const url = item.link || item.guid;
+            if (!url || seenUrls.has(url)) continue;
+            seenUrls.add(url);
+
+            let publishedAt;
+            try {
+                publishedAt = item.pubDate ? new Date(item.pubDate) : new Date();
+                if (isNaN(publishedAt.getTime())) publishedAt = new Date();
+            } catch {
+                publishedAt = new Date();
+            }
+
+            // Ignorer les articles trop vieux (> 12h pour Google News)
+            const ageHours = (Date.now() - publishedAt.getTime()) / 3_600_000;
+            if (ageHours > 12) continue;
+
+            const title = cleanGoogleTitle(item.title || '');
+            if (!title) continue;
+
+            // Description = snippet ou titre seul (Google News ne donne pas de contenu)
+            const description = item.contentSnippet || item.content || title;
+
+            // Source = nom du journal si présent dans le titre
+            const sourceMatch = item.title?.match(/[-–—]\s+(.{2,60})$/);
+            const sourceName = sourceMatch ? sourceMatch[1].trim() : 'Google News';
+
+            results.push({
+                title: title.substring(0, 500),
+                description: description.substring(0, 800),
+                url,
+                source: 'Google News',
+                sourceName,
+                sourceReliability: 6,
+                publishedAt,
+                lang: feedConfig.lang,
+                category: feedConfig.category,
+                reliability: 6,
+                raw: item,
+            });
+        }
+
+        return results;
     } catch (error) {
-        logger.warn(`[GoogleNews] Erreur pour "${label}": ${error.message}`);
+        logger.debug(`[GoogleNewsCollector] ${feedConfig.url.substring(0, 60)}: ${error.message}`);
         return [];
     }
 }
 
 /**
- * Collecte Google News pour toutes les requêtes
- * @returns {Promise<Array>}
+ * Collecte depuis tous les flux Google News
+ * @returns {Promise<Array>} Tableau d'articles standardisés
  */
-async function collectGoogleNews() {
-    logger.info(`[GoogleNews] 🔄 Collecte Google News (${NEWS_QUERIES.length} requêtes)...`);
-    const allArticles = [];
+async function collect() {
+    try {
+        const results = await Promise.allSettled(
+            GOOGLE_NEWS_FEEDS.map(feed => collectOneFeed(feed))
+        );
 
-    for (const query of NEWS_QUERIES) {
-        const articles = await fetchGoogleNews(query);
-        allArticles.push(...articles);
-        await sleep(2500); // Délai conservatif entre les requêtes scraping
+        const articles = results
+            .filter(r => r.status === 'fulfilled')
+            .flatMap(r => r.value);
+
+        if (articles.length > 0) {
+            logger.debug(`[GoogleNewsCollector] ${articles.length} article(s) collecté(s)`);
+        }
+
+        return articles;
+    } catch (error) {
+        logger.debug(`[GoogleNewsCollector] Erreur: ${error.message}`);
+        return [];
     }
-
-    logger.info(`[GoogleNews] ✅ ${allArticles.length} articles collectés`);
-    return allArticles;
 }
 
-module.exports = { collectGoogleNews, fetchGoogleNews };
+module.exports = { collect };
