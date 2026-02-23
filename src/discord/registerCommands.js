@@ -5,7 +5,7 @@
  * V2 FIX :
  * - Accepte un paramètre client optionnel
  * - Utilise client.application.id en priorité (disponible seulement après ready)
- * - Fallback sur DISCORD_CLIENT_ID si pas de client
+ * - Fallback sur CLIENT_ID ou DISCORD_CLIENT_ID (les deux supportés)
  * - Enregistrement global (toutes les guilds)
  */
 
@@ -21,13 +21,17 @@ const commandHandler = require('./CommandHandler');
  * @param {Client} [client] - Client Discord (optionnel, utilisé pour récupérer l'application ID)
  */
 async function registerCommands(client) {
-    // Priorité : client.application.id (fiable) > DISCORD_CLIENT_ID (env)
-    const clientId = client?.application?.id || process.env.DISCORD_CLIENT_ID;
+    // Priorité : client.application.id (fiable après ready)
+    // puis CLIENT_ID, puis DISCORD_CLIENT_ID (les deux sont supportés)
+    const clientId =
+        client?.application?.id ||
+        process.env.CLIENT_ID ||
+        process.env.DISCORD_CLIENT_ID;
 
     if (!clientId) {
         throw new Error(
             'Impossible de trouver le Client ID. ' +
-            'Passez le client Discord ou définissez DISCORD_CLIENT_ID dans .env'
+            'Définissez CLIENT_ID dans les variables d\'environnement de Pterodactyl.'
         );
     }
 
